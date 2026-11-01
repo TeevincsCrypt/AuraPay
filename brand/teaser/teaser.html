@@ -1,0 +1,361 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../social/common.css" />
+<style>
+  :root { --o: #e8622c; --o2: #d4521f; --ink: #141414; --cream: #f6f2f0; }
+  * { margin: 0; box-sizing: border-box; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: #000; }
+  body { font-family: Geist, sans-serif; -webkit-font-smoothing: antialiased; color: var(--ink); }
+  .scene { position: absolute; inset: 0; overflow: hidden; display: none; }
+  .orange { background: radial-gradient(1200px 700px at 30% 20%, #f07a45 0%, transparent 60%), var(--o); color: #fff; }
+  .light { background: var(--cream); }
+  .grid::before { content: ""; position: absolute; inset: 0; opacity: .10;
+    background-image: linear-gradient(rgba(255,255,255,.6) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.6) 1px, transparent 1px);
+    background-size: 80px 80px; }
+  .landing { background:
+    radial-gradient(1100px 650px at 10% 0%, #ecd7e8 0%, transparent 60%),
+    radial-gradient(1000px 650px at 100% 10%, #fde3cf 0%, transparent 60%),
+    radial-gradient(1100px 700px at 50% 110%, #d6ecea 0%, transparent 60%), var(--cream); }
+  .center { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; text-align: center; }
+  .line { font-size: 104px; font-weight: 600; letter-spacing: -0.04em; line-height: 1.05; white-space: nowrap; }
+  .w { display: inline-block; will-change: transform, opacity; }
+  .hl { position: relative; display: inline-block; padding: 0 18px; margin-left: 8px; }
+  .hl .box { position: absolute; inset: 6px 0 2px 0; border-radius: 16px; transform-origin: left center; }
+  .hl .t { position: relative; }
+  .sel { position: relative; display: inline-block; padding: 0 14px; }
+  .sel .box { position: absolute; inset: 4px -2px 0 -2px; border: 3px dashed var(--o); border-radius: 12px; background: rgba(232,98,44,.12); }
+  .cursor { position: absolute; width: 54px; height: 54px; z-index: 50; }
+  .ring { position: absolute; width: 90px; height: 90px; border-radius: 50%; border: 4px solid var(--o); z-index: 49; }
+  .ripple { position: absolute; border-radius: 50%; border: 3px solid rgba(255,255,255,.55); }
+  .card { position: absolute; left: 50%; top: 46%; padding: 30px 46px; border-radius: 28px; background: #fff; color: var(--ink);
+    font-size: 54px; font-weight: 600; letter-spacing: -0.03em; box-shadow: 0 30px 60px -20px rgba(0,0,0,.35); white-space: nowrap; }
+  .bin { position: absolute; left: 50%; top: 77%; width: 130px; height: 130px; margin: -65px 0 0 -65px; border-radius: 50%; background: #fff;
+    display: grid; place-items: center; box-shadow: 0 18px 40px -12px rgba(0,0,0,.35); }
+  .orb { position: absolute; left: 50%; top: 50%; width: 320px; height: 320px; margin: -160px 0 0 -160px; border-radius: 50%;
+    background: radial-gradient(circle at 40% 35%, #fff 0%, #fff6f0 55%, #ffe1cf 100%); box-shadow: 0 0 120px 30px rgba(255,255,255,.35); display: grid; place-items: center; }
+  .orb img { width: 210px; height: 210px; }
+  .orbit { position: absolute; left: 50%; top: 50%; border-radius: 50%; border: 2px solid rgba(255,255,255,.35); }
+  .dot { position: absolute; width: 18px; height: 18px; margin: -9px; border-radius: 50%; background: #fff; }
+  .phone { position: absolute; width: 470px; height: 940px; border-radius: 64px; background: #111; padding: 14px; box-shadow: 0 60px 120px -40px rgba(0,0,0,.45); }
+  .screen { width: 100%; height: 100%; border-radius: 52px; background: var(--cream); overflow: hidden; position: relative; padding: 70px 30px 30px; }
+  .pill { display: inline-flex; align-items: center; gap: 12px; padding: 12px 24px; border-radius: 999px; background: rgba(255,255,255,.9); font-size: 26px; font-weight: 500; color: #555; box-shadow: 0 4px 18px rgba(0,0,0,.06); }
+  .key { display: grid; place-items: center; height: 74px; border-radius: 22px; font-size: 34px; font-weight: 500; }
+  .big { font-weight: 900; letter-spacing: -0.06em; }
+  .chip { display: inline-flex; align-items: center; gap: 14px; padding: 14px 24px; border-radius: 999px; background: #fff; font-size: 30px; font-weight: 600; box-shadow: 0 8px 24px -10px rgba(0,0,0,.15); }
+  .flag { width: 44px; height: 30px; border-radius: 6px; overflow: hidden; display: flex; position: relative; box-shadow: 0 0 0 1px rgba(0,0,0,.06); }
+  .stat { display: flex; flex-direction: column; align-items: center; width: 330px; }
+  .stat .n { font-size: 150px; font-weight: 800; letter-spacing: -0.06em; color: var(--o); line-height: 1; }
+  .stat .l { margin-top: 10px; font-size: 36px; font-weight: 500; color: #555; }
+  .fade { position: absolute; inset: 0; background: #fff; pointer-events: none; z-index: 100; opacity: 0; }
+</style>
+</head>
+<body>
+  <!-- S1: Every month, we top up airtime. -->
+  <div class="scene orange grid" id="s1">
+    <div id="ripples"></div>
+    <div class="center"><div class="line" id="s1line">
+      <span class="w">Every</span> <span class="w">month,</span> <span class="w">we</span> <span class="w">top</span> <span class="w">up</span>
+      <span class="hl w"><span class="box" style="background:#fff"></span><span class="t" style="color:var(--o)">airtime.</span></span>
+    </div></div>
+  </div>
+
+  <!-- S2: We keep the lights on. / We send money home. -->
+  <div class="scene light" id="s2">
+    <div class="center"><div class="line" id="s2a">
+      <span class="w">We</span> <span class="w">keep</span> <span class="w">the</span>
+      <span class="hl w"><span class="box" style="background:var(--o)"></span><span class="t" style="color:#fff">lights on.</span></span>
+    </div></div>
+    <div class="center"><div class="line" id="s2b">
+      <span class="w">We</span> <span class="w">send</span> <span class="w">money</span>
+      <span class="hl w"><span class="box" style="background:var(--o)"></span><span class="t" style="color:#fff">home.</span></span>
+    </div></div>
+  </div>
+
+  <!-- S3: Paying with crypto? problem cards binned -->
+  <div class="scene orange grid" id="s3">
+    <div class="center" style="justify-content:flex-start; padding-top: 150px;"><div class="line" id="s3t" style="font-size:80px">
+      <span class="w">But</span> <span class="w">paying</span> <span class="w">bills</span> <span class="w">with</span> <span class="w" style="font-weight:800">crypto?</span>
+    </div></div>
+    <div class="card" id="c0">Cash out first.</div>
+    <div class="card" id="c1">Find an agent.</div>
+    <div class="card" id="c2">Chase the rate.</div>
+    <div class="card" id="c3">Fees on fees.</div>
+    <div class="bin" id="bin">
+      <svg width="58" height="58" viewBox="0 0 24 24" fill="none" stroke="#e8622c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+    </div>
+  </div>
+
+  <!-- S4: Then AuraPay enters. -->
+  <div class="scene light" id="s4">
+    <div class="center"><div class="line" id="s4line" style="font-size:110px">
+      <span class="w">Then</span> <span class="sel w"><span class="box"></span><span class="t" style="color:var(--o); font-weight:700">AuraPay</span></span> <span class="w">enters.</span>
+    </div></div>
+  </div>
+
+  <!-- S5: logo orb + orbiting services -->
+  <div class="scene orange" id="s5">
+    <div class="orbit" id="o1" style="width:560px;height:560px;margin:-280px 0 0 -280px"></div>
+    <div class="orbit" id="o2" style="width:820px;height:820px;margin:-410px 0 0 -410px"></div>
+    <div class="orbit" id="o3" style="width:1120px;height:1120px;margin:-560px 0 0 -560px"></div>
+    <div id="dots"></div>
+    <div class="orb" id="orb"><img src="../../public/brand/aurapay-mark-512.png" /></div>
+    <div id="svc" style="position:absolute; left: calc(50% + 220px); top: 50%; transform: translateY(-50%); font-size: 64px; font-weight: 600; letter-spacing:-0.03em; white-space:nowrap"></div>
+    <div id="s5cap" style="position:absolute; bottom: 90px; width:100%; text-align:center; font-size:44px; font-weight:500; opacity:.95">Every bill. One app.</div>
+  </div>
+
+  <!-- S6: Pay any bill (phone) -->
+  <div class="scene light" id="s6">
+    <div id="s6cap" style="position:absolute; left: 180px; top: 50%; transform: translateY(-50%);">
+      <div class="line" style="font-size:96px; text-align:left">Pay any bill</div>
+      <div class="line" style="font-size:96px; text-align:left">with <span style="color:var(--o)">NIM</span> or <span style="color:var(--o)">USDT</span>.</div>
+      <div style="margin-top:28px; font-size:34px; color:#666; font-weight:500">Airtime, data, power, TV and internet.</div>
+    </div>
+    <div class="phone" id="phone" style="right: 240px; top: 70px;">
+      <div class="screen">
+        <div style="font-size:24px; color:#888; font-weight:500">Airtime · MTN Nigeria</div>
+        <div style="font-size:30px; font-weight:600; margin-top:6px">+234 803 123 4567</div>
+        <div id="amt" style="margin-top:34px; height: 170px; border-radius: 30px; background: linear-gradient(180deg,#fde9dc,#fff); display:flex; flex-direction:column; align-items:center; justify-content:center">
+          <div id="amtv" style="font-size:72px; font-weight:700; letter-spacing:-0.04em">₦0</div>
+          <div style="font-size:22px; color:#888; margin-top:4px">NGN</div>
+        </div>
+        <div id="keypad" style="margin-top:22px; display:grid; grid-template-columns: repeat(3,1fr); gap: 10px"></div>
+        <div id="paywith" style="margin-top:20px; display:flex; align-items:center; gap:14px; padding:16px 18px; border-radius:22px; border:2px solid var(--o); background:#fdeee6">
+          <div style="width:44px;height:44px;border-radius:50%;background:#fbefd6;display:grid;place-items:center;font-size:15px;font-weight:700;color:#b8860b">NIM</div>
+          <div style="font-size:24px;font-weight:600">Pay with NIM</div>
+        </div>
+        <!-- review / slide -->
+        <div id="review" style="position:absolute; inset:0; background:var(--cream); padding:90px 30px 30px; opacity:0">
+          <div style="background:#fff; border-radius:30px; padding:28px; box-shadow:0 10px 30px -14px rgba(0,0,0,.2)">
+            <div style="font-size:20px;color:#888">You're paying</div>
+            <div style="font-size:52px;font-weight:700;letter-spacing:-0.03em;margin-top:6px">1,166 NIM</div>
+            <div style="font-size:22px;color:#888;margin-top:2px">≈ ₦2,000</div>
+            <div style="height:1px;background:#eee;margin:22px 0"></div>
+            <div style="display:flex;justify-content:space-between;font-size:22px;padding:6px 0"><span style="color:#888">To</span><span>+234 803 123 4567</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:22px;padding:6px 0"><span style="color:#888">Provider</span><span>MTN</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:22px;padding:6px 0"><span style="color:#888">They receive</span><span style="font-weight:600">₦2,000</span></div>
+          </div>
+          <div id="slider" style="position:absolute; left:30px; right:30px; bottom:70px; height:96px; border-radius:999px; background:var(--o); overflow:hidden">
+            <div style="position:absolute; inset:0; display:grid; place-items:center; color:#fff; font-size:26px; font-weight:600; padding-left:60px">Slide to pay 1,166 NIM</div>
+            <div id="knob" style="position:absolute; left:8px; top:8px; width:80px; height:80px; border-radius:50%; background:#fff; display:grid; place-items:center; color:var(--o); font-size:36px; font-weight:700">→</div>
+          </div>
+        </div>
+        <div id="done" style="position:absolute; inset:0; background:var(--cream); display:flex; flex-direction:column; align-items:center; justify-content:center; opacity:0">
+          <div id="check" style="width:150px;height:150px;border-radius:50%;background:#16a34a;display:grid;place-items:center">
+            <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg>
+          </div>
+          <div style="font-size:40px;font-weight:700;margin-top:30px">Airtime delivered</div>
+          <div style="font-size:24px;color:#888;margin-top:8px">₦2,000 · MTN · just now</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- S7: Send by @username -->
+  <div class="scene orange grid" id="s7">
+    <div id="s7cap" class="line" style="position:absolute; top: 120px; width:100%; text-align:center; font-size:88px">Send by <span style="font-weight:800">@username</span>.</div>
+    <div id="sendcard" style="position:absolute; left:50%; top:56%; width:760px; margin-left:-380px; transform:translateY(-50%); background:#fff; color:var(--ink); border-radius:40px; padding:44px; box-shadow:0 40px 80px -30px rgba(0,0,0,.4)">
+      <div style="font-size:26px;color:#888;font-weight:500">To</div>
+      <div style="margin-top:10px; height:96px; border-radius:24px; background:#f4f1ee; display:flex; align-items:center; padding:0 28px; font-size:44px; font-weight:600"><span style="color:#aaa">@</span><span id="uname"></span><span id="caret" style="width:3px;height:48px;background:var(--o);margin-left:4px"></span></div>
+      <div id="tick" style="margin-top:12px;font-size:24px;color:#16a34a;font-weight:600;opacity:0">✓ @amaka · NIM &amp; USDT</div>
+      <div id="amt2" style="margin-top:22px;display:flex;align-items:baseline;gap:14px;opacity:0"><span style="font-size:96px;font-weight:700;letter-spacing:-0.04em">25</span><span style="font-size:40px;font-weight:600;color:#888">USDT</span>
+        <span style="margin-left:auto" class="chip" ><span style="color:#16a34a">●</span> Free · wallet to wallet</span></div>
+    </div>
+    <div id="notif" style="position:absolute; right:110px; top:236px; width:600px; background:rgba(255,255,255,.97); color:var(--ink); border-radius:30px; padding:24px 28px; display:flex; gap:20px; align-items:center; box-shadow:0 30px 60px -20px rgba(0,0,0,.4); opacity:0">
+      <div style="width:70px;height:70px;border-radius:50%;background:linear-gradient(135deg,#f08a52,#e2482a);display:grid;place-items:center;color:#fff;font-weight:700;font-size:28px">T</div>
+      <div><div style="font-size:24px;color:#888">AuraPay · now</div><div style="font-size:32px;font-weight:600;margin-top:2px">Received 25 USDT from @tee</div></div>
+    </div>
+  </div>
+
+  <!-- S8: This is money / BORDERLESS -->
+  <div class="scene light" id="s8">
+    <div class="center">
+      <div id="s8a" style="font-size:56px;font-weight:500;color:#666">This is money</div>
+      <div id="s8b" class="big" style="font-size:250px;line-height:.9;color:var(--o)"></div>
+    </div>
+  </div>
+
+  <!-- S9: Schedule it. Save together. Never miss a bill. -->
+  <div class="scene orange" id="s9">
+    <svg id="wave" width="1920" height="1080" style="position:absolute;inset:0"><path id="wavep" fill="#d4521f"/></svg>
+    <div class="center"><div class="line" id="s9t" style="font-size:120px"></div>
+    <div id="s9s" style="margin-top:24px;font-size:38px;font-weight:500;opacity:.9"></div></div>
+  </div>
+
+  <!-- S10: real numbers + countries -->
+  <div class="scene light" id="s10">
+    <div id="stats" style="position:absolute; top: 210px; width:100%; display:flex; justify-content:center; gap: 40px">
+      <div class="stat"><div class="n">4</div><div class="l">countries</div></div>
+      <div class="stat"><div class="n">5</div><div class="l">bill types</div></div>
+      <div class="stat"><div class="n">2</div><div class="l">coins · NIM &amp; USDT</div></div>
+      <div class="stat"><div class="n" style="font-size:120px;padding-top:30px">Free</div><div class="l">@username transfers</div></div>
+    </div>
+    <div id="countries" style="position:absolute; bottom: 210px; width:100%; display:flex; justify-content:center; gap: 22px">
+      <span class="chip"><span class="flag"><i style="flex:1;background:#008751"></i><i style="flex:1;background:#fff"></i><i style="flex:1;background:#008751"></i></span>Nigeria</span>
+      <span class="chip"><span class="flag" style="flex-direction:column"><i style="flex:1;background:#ce1126"></i><i style="flex:1;background:#fcd116"></i><i style="flex:1;background:#006b3f"></i><b style="position:absolute;left:50%;top:50%;transform:translate(-50%,-52%);font-size:13px;color:#000">★</b></span>Ghana</span>
+      <span class="chip"><span class="flag" style="flex-direction:column"><i style="flex:1;background:#000"></i><i style="height:3px;background:#fff"></i><i style="flex:1;background:#bb0000"></i><i style="height:3px;background:#fff"></i><i style="flex:1;background:#006600"></i></span>Kenya</span>
+      <span class="chip"><span class="flag" style="flex-direction:column"><i style="flex:1;background:#000"></i><i style="flex:1;background:#fcdc04"></i><i style="flex:1;background:#d90000"></i><i style="flex:1;background:#000"></i><i style="flex:1;background:#fcdc04"></i><i style="flex:1;background:#d90000"></i></span>Uganda</span>
+    </div>
+  </div>
+
+  <!-- S11: outro -->
+  <div class="scene landing" id="s11">
+    <div class="center">
+      <img id="olog" src="../../public/brand/aurapay-mark-512.png" style="width:230px;height:230px; filter: drop-shadow(0 26px 34px rgba(226,72,42,.30))" />
+      <div id="o1t" class="line" style="font-size:120px; font-weight:700; margin-top:26px">Your money.</div>
+      <div id="o2t" class="line" style="font-size:120px; font-weight:700; color:var(--o)">Without borders.</div>
+      <div style="margin-top:40px; display:flex; gap:20px; align-items:center">
+        <span id="opill" class="pill"><span style="width:12px;height:12px;border-radius:50%;background:var(--o)"></span>A Nimiq Pay Mini App</span>
+        <span id="obtn" style="display:inline-flex; align-items:center; height:76px; padding:0 40px; border-radius:999px; background:var(--o); color:#fff; font-size:30px; font-weight:600; box-shadow:0 14px 30px -12px rgba(232,98,44,.6)">Coming soon</span>
+      </div>
+    </div>
+  </div>
+
+  <svg class="cursor" id="cursor" viewBox="0 0 24 24" style="display:none"><path d="M4 2l16 9-7 2-3 7z" fill="#111" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg>
+  <div class="ring" id="ring" style="display:none"></div>
+  <div class="fade" id="fade"></div>
+
+<script>
+const BEAT = 0.5; // 120 BPM
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const eo = (x) => 1 - Math.pow(1 - x, 3);            // ease out
+const eio = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+const back = (x) => { const c = 1.7; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
+const $ = (id) => document.getElementById(id);
+const SCENES = [["s1",0,8],["s2",8,14],["s3",14,24],["s4",24,28],["s5",28,38],["s6",38,50],["s7",50,58],["s8",58,62],["s9",62,68],["s10",68,76],["s11",76,90]];
+
+// Word reveal: rise + fade, starting at beat `at`.
+function word(el, b, at, dur = 0.5) { const p = eo(seg(b, at, at + dur)); el.style.opacity = p; el.style.transform = `translateY(${(1 - p) * 40}px)`; }
+function hl(el, b, at) { const p = eo(seg(b, at, at + 0.6)); el.querySelector(".box").style.transform = `scaleX(${p})`; el.style.opacity = seg(b, at - 0.05, at + 0.15); }
+
+// keypad
+const kp = $("keypad"); ["1","2","3","4","5","6","7","8","9",".","0","⌫"].forEach((k) => { const d = document.createElement("div"); d.className = "key"; d.textContent = k; d.dataset.k = k; kp.appendChild(d); });
+// orbit dots
+const dots = $("dots"); for (let i = 0; i < 7; i++) { const d = document.createElement("div"); d.className = "dot"; dots.appendChild(d); }
+// ripples
+const rp = $("ripples"); for (let i = 0; i < 5; i++) { const d = document.createElement("div"); d.className = "ripple"; rp.appendChild(d); }
+
+function cursorAt(x, y, show) { const c = $("cursor"); c.style.display = show ? "block" : "none"; c.style.left = x + "px"; c.style.top = y + "px"; }
+function ringAt(x, y, p) { const r = $("ring"); if (p <= 0 || p >= 1) { r.style.display = "none"; return; } r.style.display = "block"; r.style.left = x - 45 + "px"; r.style.top = y - 45 + "px"; r.style.opacity = 1 - p; r.style.transform = `scale(${0.4 + p * 1.2})`; }
+
+window.render = function (t) {
+  const b = t / BEAT;
+  for (const [id, a, z] of SCENES) $(id).style.display = b >= a && b < z ? "block" : "none";
+  cursorAt(0, 0, false); ringAt(0, 0, 0);
+
+  // S1
+  if (b < 8) {
+    [...rp.children].forEach((d, i) => { const ph = ((b + i * 0.8) % 4) / 4; const s = 80 + ph * 1400; d.style.width = d.style.height = s + "px"; d.style.left = 960 - s / 2 + "px"; d.style.top = 540 - s / 2 + "px"; d.style.opacity = (1 - ph) * 0.32; });
+    const w = $("s1line").querySelectorAll(".w"); [1, 1.5, 3, 3.4, 3.8].forEach((at, i) => word(w[i], b, at)); hl(w[5], b, 5.2);
+    $("s1line").style.transform = `scale(${1 + seg(b, 6, 8) * 0.04})`;
+  }
+  // S2
+  if (b >= 8 && b < 14) {
+    const A = $("s2a"), B = $("s2b"); const swap = seg(b, 10.8, 11.1);
+    A.style.opacity = 1 - swap; B.style.opacity = swap;
+    const wa = A.querySelectorAll(".w"); [8, 8.3, 8.6].forEach((at, i) => word(wa[i], b, at)); hl(wa[3], b, 9.2);
+    const wb = B.querySelectorAll(".w"); [11, 11.3, 11.6].forEach((at, i) => word(wb[i], b, at)); hl(wb[3], b, 12.2);
+  }
+  // S3
+  if (b >= 14 && b < 24) {
+    const w = $("s3t").querySelectorAll(".w"); [14, 14.3, 14.6, 14.9, 15.3].forEach((at, i) => word(w[i], b, at));
+    for (let i = 0; i < 4; i++) {
+      const c = $("c" + i), a = 16 + 1.8 * i;
+      const pin = back(seg(b, a, a + 0.5)), drop = eio(seg(b, a + 1.1, a + 1.6));
+      const vis = b >= a && b < a + 1.6;
+      c.style.display = vis ? "block" : "none";
+      const y = -50 + drop * 370, sc = (0.6 + 0.4 * pin) * (1 - drop * 0.85), rot = (i % 2 ? -1 : 1) * (3 - 3 * pin + drop * 14);
+      c.style.transform = `translate(-50%, ${y}%) scale(${sc}) rotate(${rot}deg)`;
+      c.style.opacity = Math.min(seg(b, a, a + 0.2), 1 - seg(b, a + 1.45, a + 1.6));
+    }
+    const bump = [0, 1, 2, 3].map((i) => { const at = 16 + 1.8 * i + 1.55; return Math.max(0, 1 - Math.abs(b - at) * 4); }).reduce((x, y) => Math.max(x, y), 0);
+    $("bin").style.transform = `scale(${eo(seg(b, 15.5, 16)) * (1 + bump * 0.18)})`;
+  }
+  // S4
+  if (b >= 24 && b < 28) {
+    const w = $("s4line").querySelectorAll(".w"); word(w[0], b, 24); word(w[1], b, 24.5); word(w[2], b, 25);
+    const box = w[1].querySelector(".box"); box.style.opacity = seg(b, 25.6, 25.8);
+    // cursor glides to "AuraPay" and clicks at beat 26.5
+    const r = w[1].getBoundingClientRect(); const tx = r.left + r.width * 0.62, ty = r.top + r.height * 0.78;
+    const m = eio(seg(b, 25.4, 26.4)); cursorAt(1500 + (tx - 1500) * m, 950 + (ty - 950) * m, b >= 25.3);
+    ringAt(tx, ty, seg(b, 26.5, 27.1));
+    w[1].style.transform = `scale(${1 + 0.08 * eo(seg(b, 26.5, 26.8)) - 0.08 * eo(seg(b, 26.8, 27.4))})`;
+    $("s4line").style.transform = `scale(${1 + seg(b, 27, 28) * 0.06})`;
+  }
+  // S5 (the drop)
+  if (b >= 28 && b < 38) {
+    const pin = back(seg(b, 28, 28.8));
+    $("orb").style.transform = `scale(${pin}) rotate(${(1 - pin) * -20}deg)`;
+    ["o1", "o2", "o3"].forEach((id, i) => { const p = eo(seg(b, 28.2 + i * 0.25, 29 + i * 0.25)); $(id).style.transform = `scale(${p}) rotate(${b * (i % 2 ? -6 : 8)}deg)`; $(id).style.opacity = p; });
+    [...dots.children].forEach((d, i) => { const R = [280, 410, 560][i % 3], sp = (i % 2 ? -1 : 1) * (0.35 + 0.1 * i); const a = b * sp + i * 1.7; d.style.left = 960 + Math.cos(a) * R + "px"; d.style.top = 540 + Math.sin(a) * R + "px"; d.style.opacity = eo(seg(b, 28.8, 29.6)) * (i % 3 === 2 ? 0.6 : 1); });
+    const svcs = ["Airtime", "Data", "Electricity", "Cable TV", "Internet"]; const k = Math.floor((b - 29) / 1.6);
+    const s = $("svc");
+    if (b >= 29 && k < svcs.length) { s.textContent = svcs[Math.max(0, k)]; const lp = (b - 29 - k * 1.6) / 1.6; s.style.opacity = Math.min(seg(lp, 0, 0.18), 1 - seg(lp, 0.8, 1)); s.style.transform = `translate(${(1 - eo(seg(lp, 0, 0.25))) * -40}px, -50%)`; }
+    else s.style.opacity = 0;
+    $("orb").style.marginLeft = -160 - 220 * eo(seg(b, 29, 29.6)) + "px";
+    $("s5cap").style.opacity = seg(b, 30, 30.5); $("s5cap").style.transform = `translateY(${(1 - eo(seg(b, 30, 30.6))) * 30}px)`;
+  }
+  // S6 phone
+  if (b >= 38 && b < 50) {
+    const cap = $("s6cap"); cap.style.opacity = seg(b, 38, 38.5); cap.style.transform = `translate(${(1 - eo(seg(b, 38, 38.8))) * -60}px, -50%)`;
+    $("phone").style.transform = `translateY(${(1 - eo(seg(b, 38.2, 39.2))) * 300}px) rotate(${(1 - eo(seg(b, 38.2, 39.2))) * 6}deg)`;
+    const taps = [[40, "2"], [40.5, "0"], [41, "0"], [41.5, "0"]]; let v = "";
+    taps.forEach(([at, k]) => { if (b >= at) v += k; });
+    $("amtv").textContent = "₦" + (v ? Number(v).toLocaleString("en-US") : "0");
+    [...kp.children].forEach((d) => { const hit = taps.some(([at, k]) => d.dataset.k === k && b >= at && b < at + 0.3); d.style.background = hit ? "#fbe5d6" : "transparent"; d.style.transform = hit ? "scale(.92)" : "none"; });
+    $("review").style.opacity = seg(b, 42.4, 42.7);
+    const kn = eio(seg(b, 43.5, 45)); $("knob").style.left = 8 + kn * 290 + "px";
+    $("done").style.opacity = seg(b, 45.4, 45.6);
+    $("check").style.transform = `scale(${back(seg(b, 45.5, 46.1))})`;
+  }
+  // S7 send
+  if (b >= 50 && b < 58) {
+    const cap = $("s7cap"); cap.style.opacity = seg(b, 50, 50.4); cap.style.transform = `translateY(${(1 - eo(seg(b, 50, 50.6))) * 30}px)`;
+    $("sendcard").style.transform = `translateY(calc(-50% + ${(1 - back(seg(b, 50.2, 51))) * 160}px))`; $("sendcard").style.opacity = seg(b, 50.2, 50.5);
+    const name = "amaka"; const n = clamp(Math.floor((b - 51) / 0.25) + 1, 0, name.length); $("uname").textContent = b >= 51 ? name.slice(0, n) : "";
+    $("caret").style.opacity = Math.floor(b * 2) % 2 === 0 || b < 52.5 ? 1 : 0;
+    $("tick").style.opacity = seg(b, 52.4, 52.6); $("amt2").style.opacity = seg(b, 52.9, 53.2);
+    const np = back(seg(b, 54.5, 55.1)); $("notif").style.opacity = seg(b, 54.5, 54.7); $("notif").style.transform = `translateY(${(1 - np) * -60}px) scale(${0.9 + 0.1 * np})`;
+  }
+  // S8 BORDERLESS
+  if (b >= 58 && b < 62) {
+    $("s8a").style.opacity = seg(b, 58, 58.4); $("s8a").style.transform = `translateY(${(1 - eo(seg(b, 58, 58.6))) * 20}px)`;
+    const W = "BORDERLESS"; const el = $("s8b"); if (!el.children.length) W.split("").forEach((ch) => { const s = document.createElement("span"); s.className = "w"; s.textContent = ch; el.appendChild(s); });
+    [...el.children].forEach((s, i) => { const p = back(seg(b, 59 + i * 0.12, 59.5 + i * 0.12)); s.style.opacity = seg(b, 59 + i * 0.12, 59.2 + i * 0.12); s.style.transform = `translateY(${(1 - p) * 120}px) scale(${0.7 + 0.3 * p})`; });
+    el.style.transform = `scale(${1 + seg(b, 60.5, 62) * 0.05})`;
+  }
+  // S9 three lines on a wave
+  if (b >= 62 && b < 68) {
+    const p = eio(seg(b, 62, 62.8)); let d = `M0 ${1080 - p * 1180} `;
+    for (let x = 0; x <= 1920; x += 40) d += `L${x} ${1080 - p * 1180 + Math.sin(x / 260 + b * 2) * 60 * (1 - p * 0.6)} `;
+    $("wavep").setAttribute("d", d + "L1920 1080 L0 1080 Z");
+    const items = [["Schedule it.", "Bills that pay themselves, on time."], ["Save together.", "Savings circles with friends and family."], ["Never miss a bill.", "Reminders, then pay in one tap."]];
+    const k = clamp(Math.floor((b - 62.6) / 1.8), 0, 2), lp = (b - 62.6 - k * 1.8) / 1.8;
+    $("s9t").textContent = items[k][0]; $("s9s").textContent = items[k][1];
+    const o = b < 62.6 ? 0 : Math.min(seg(lp, 0, 0.12), k === 2 ? 1 : 1 - seg(lp, 0.88, 1));
+    $("s9t").style.opacity = o; $("s9s").style.opacity = o * 0.9;
+    $("s9t").style.transform = `translateY(${(1 - eo(seg(lp, 0, 0.25))) * 40}px)`;
+  }
+  // S10 real numbers + countries
+  if (b >= 68 && b < 76) {
+    [...$("stats").children].forEach((s, i) => { const at = 68.3 + i * 0.9; const p = back(seg(b, at, at + 0.5)); s.style.opacity = seg(b, at, at + 0.15); s.style.transform = `translateY(${(1 - p) * 60}px) scale(${0.85 + 0.15 * p})`; });
+    [...$("countries").children].forEach((c, i) => { const at = 72.4 + i * 0.35; const p = back(seg(b, at, at + 0.45)); c.style.opacity = seg(b, at, at + 0.12); c.style.transform = `translateY(${(1 - p) * 40}px)`; });
+  }
+  // S11 outro
+  if (b >= 76) {
+    const lp = back(seg(b, 76, 76.9)); $("olog").style.transform = `scale(${lp}) rotate(${(1 - lp) * -25}deg)`; $("olog").style.opacity = seg(b, 76, 76.2);
+    word($("o1t"), b, 77); word($("o2t"), b, 77.8);
+    word($("opill"), b, 79); word($("obtn"), b, 79.4);
+    const r = $("obtn").getBoundingClientRect(); const tx = r.left + r.width * 0.6, ty = r.top + r.height * 0.62;
+    const m = eio(seg(b, 80.2, 81.4)); cursorAt(1650 + (tx - 1650) * m, 1000 + (ty - 1000) * m, b >= 80.1 && b < 85);
+    ringAt(tx, ty, seg(b, 81.6, 82.2));
+    $("obtn").style.transform = `scale(${1 - 0.06 * eo(seg(b, 81.5, 81.7)) + 0.06 * eo(seg(b, 81.7, 82.1))})`;
+    $("fade").style.opacity = seg(b, 87.6, 89.4);
+  } else $("fade").style.opacity = 0;
+};
+window.render(0);
+</script>
+</body>
+</html>
