@@ -2,7 +2,7 @@ import "server-only";
 import { readdir, readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config";
-import { log } from "../log";
+import { errorMessage, log } from "../log";
 import { ConfigError } from "../http";
 
 /**
@@ -42,7 +42,12 @@ async function createPostgres(url: string): Promise<DbState> {
   });
 
   // `unsafe(text, params)` is used only with static SQL text + bound parameters.
-  type Runner = { unsafe: (text: string, params?: never[]) => PromiseLike<unknown> & { simple(): PromiseLike<unknown> } };
+  type Runner = {
+    unsafe: (
+      text: string,
+      params?: never[],
+    ) => PromiseLike<unknown> & { simple(): PromiseLike<unknown> };
+  };
   const wrap = (s: Runner, root: boolean): Db => ({
     async query<T extends Row>(text: string, params: unknown[] = []) {
       return (await s.unsafe(text, params as never[])) as T[];
@@ -52,7 +57,9 @@ async function createPostgres(url: string): Promise<DbState> {
     },
     async transaction<R>(fn: (tx: Db) => Promise<R>): Promise<R> {
       if (!root) return fn(wrap(s, false));
-      return (await sql.begin((tx) => fn(wrap(tx as unknown as Runner, false)))) as R;
+      return (await sql.begin((tx) =>
+        fn(wrap(tx as unknown as Runner, false)),
+      )) as R;
     },
   });
   return { db: wrap(sql as unknown as Runner, true), kind: "postgres" };
@@ -79,12 +86,17 @@ async function createPglite(dir: string | undefined): Promise<DbState> {
     },
     async transaction<R>(fn: (tx: Db) => Promise<R>): Promise<R> {
       if (!root) return fn(wrap(s, false));
-      const run = queue.then(() => pg.transaction((tx) => fn(wrap(tx as unknown as Runner, false))));
+      const run = queue.then(() =>
+        pg.transaction((tx) => fn(wrap(tx as unknown as Runner, false))),
+      );
       queue = run.catch(() => undefined);
       return run as Promise<R>;
     },
   });
-  return { db: wrap(pg as unknown as Runner, true), kind: dir ? "pglite-persistent" : "pglite-memory" };
+  return {
+    db: wrap(pg as unknown as Runner, true),
+    kind: dir ? "pglite-persistent" : "pglite-memory",
+  };
 }
 
 async function migrate({ db, kind }: DbState): Promise<void> {
@@ -94,33 +106,121 @@ async function migrate({ db, kind }: DbState): Promise<void> {
   const dir = path.join(process.cwd(), "supabase", "migrations");
   const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
   const applied = new Set(
-    (await db.query<{ name: string }>("select name from schema_migrations")).map((r) => r.name),
+    (
+      await db.query<{ name: string }>("select name from schema_migrations")
+    ).map((r) => r.name),
   );
   for (const file of files) {
     if (applied.has(file)) continue;
     const script = await readFile(path.join(dir, file), "utf8");
     log.info("db.migrate", { file, kind });
-    await db.transaction(async (tx) => {
-      // Serialise concurrent cold starts; the loser sees the migration as applied and skips it.
-      if (kind === "postgres") await tx.query("select pg_advisory_xact_lock(727274)");
-      if ((await tx.query("select 1 from schema_migrations where name = $1", [file])).length) return;
-      await tx.exec(script);
-      await tx.query("insert into schema_migrations (name) values ($1)", [file]);
-    });
+    try {
+      await migrateOne(db, kind, file, script);
+    } catch (err) {
+      log.error("db.migration_failed", { file, error: errorMessage(err) });
+      throw new ConfigError(
+        `setting up the database failed at ${file}: ${errorMessage(err).slice(0, 200)}.`,
+      );
+    }
   }
+}
+
+async function migrateOne(
+  db: Db,
+  kind: DbKind,
+  file: string,
+  script: string,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    // Serialise concurrent cold starts; the loser sees the migration as applied and skips it.
+    if (kind === "postgres")
+      await tx.query("select pg_advisory_xact_lock(727274)");
+    if (
+      (
+        await tx.query("select 1 from schema_migrations where name = $1", [
+          file,
+        ])
+      ).length
+    )
+      return;
+    await tx.exec(script);
+    await tx.query("insert into schema_migrations (name) values ($1)", [file]);
+  });
+}
+
+/**
+ * Turns a database connection/setup failure into an actionable message. Never includes
+ * the connection string or password — only the error class and Postgres' own message.
+ */
+export function describeDbError(err: unknown, url?: string): string | null {
+  const e = err as { code?: string; message?: string; errno?: string } | null;
+  const code = String(e?.code ?? e?.errno ?? "");
+  const msg = String(e?.message ?? err ?? "");
+  let host = "";
+  try {
+    host = url ? new URL(url).host.replace(/^.*@/, "") : "";
+  } catch {
+    return "DATABASE_URL isn't a valid connection string. If the password has special characters (@ # / ? %), URL-encode them or reset the password to letters and digits.";
+  }
+  const isDirect = /^db\.[a-z0-9]+\.supabase\.co(:\d+)?$/i.test(host);
+  if (code === "28P01" || /password authentication failed/i.test(msg)) {
+    return "the database rejected the password in DATABASE_URL. Make sure [YOUR-PASSWORD] was replaced with your Supabase database password (Supabase → Project Settings → Database → Reset password if unsure), then redeploy.";
+  }
+  if (/tenant or user not found/i.test(msg)) {
+    return "Supabase's pooler didn't recognise the user. Copy the URI again from Supabase → Connect → Transaction pooler — the user must look like postgres.<project-ref> — then redeploy.";
+  }
+  if (
+    [
+      "ENOTFOUND",
+      "EAI_AGAIN",
+      "ENETUNREACH",
+      "EHOSTUNREACH",
+      "ECONNREFUSED",
+      "ETIMEDOUT",
+      "CONNECT_TIMEOUT",
+      "ECONNRESET",
+    ].includes(code) ||
+    /connect|timeout|getaddrinfo/i.test(msg)
+  ) {
+    return isDirect
+      ? "Vercel can't reach Supabase's direct connection (db.<ref>.supabase.co is IPv6-only). Use the Transaction pooler URI from Supabase → Connect (host …pooler.supabase.com, port 6543) as DATABASE_URL, then redeploy."
+      : `couldn't reach the database at ${host || "the configured host"} (${code || "connection error"}). Check the host in DATABASE_URL — use Supabase's Transaction pooler URI (port 6543) — and that the Supabase project isn't paused.`;
+  }
+  if (code === "3D000" || /database .* does not exist/i.test(msg))
+    return "the database named in DATABASE_URL doesn't exist. Supabase's is called postgres (…:6543/postgres).";
+  if (/ssl|certificate/i.test(msg))
+    return "the database connection failed during SSL setup. Use the URI exactly as Supabase shows it (Transaction pooler).";
+  return null;
 }
 
 async function init(): Promise<DbState> {
   let state: DbState;
   if (config.databaseUrl) {
-    state = await createPostgres(config.databaseUrl);
+    try {
+      state = await createPostgres(config.databaseUrl);
+      await state.db.query("select 1");
+    } catch (err) {
+      log.error("db.connect_failed", {
+        code: (err as { code?: string }).code ?? null,
+        error: errorMessage(err),
+      });
+      throw new ConfigError(
+        describeDbError(err, config.databaseUrl) ??
+          `couldn't connect to the database (${errorMessage(err).slice(0, 160)}).`,
+      );
+    }
     // On by default (tracked in schema_migrations, so each file runs once); DB_AUTO_MIGRATE=false opts out.
     if (process.env.DB_AUTO_MIGRATE !== "false") await migrate(state);
   } else {
     if (!config.allowEmbeddedDb) {
       // Names only, never values: helps tell a missing variable from one scoped to another environment.
-      const target = process.env.VERCEL_ENV ? `this ${process.env.VERCEL_ENV} deployment` : "this server";
-      log.error("db.not_configured", { vercelEnv: process.env.VERCEL_ENV ?? null, deployment: process.env.VERCEL_URL ?? null });
+      const target = process.env.VERCEL_ENV
+        ? `this ${process.env.VERCEL_ENV} deployment`
+        : "this server";
+      log.error("db.not_configured", {
+        vercelEnv: process.env.VERCEL_ENV ?? null,
+        deployment: process.env.VERCEL_URL ?? null,
+      });
       throw new ConfigError(
         `the database (DATABASE_URL) is not set for ${target}. In Vercel, add it under Settings → Environment Variables with "${process.env.VERCEL_ENV === "preview" ? "Preview" : "Production"}" ticked, then redeploy.`,
       );
@@ -155,5 +255,7 @@ export function numOrNull(v: unknown): number | null {
 
 export function iso(v: unknown): string | null {
   if (!v) return null;
-  return v instanceof Date ? v.toISOString() : new Date(String(v)).toISOString();
+  return v instanceof Date
+    ? v.toISOString()
+    : new Date(String(v)).toISOString();
 }
