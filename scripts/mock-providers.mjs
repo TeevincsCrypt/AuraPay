@@ -15,6 +15,7 @@
  *   node scripts/mock-providers.mjs [port=4010]
  */
 import http from "node:http";
+import { decodeFunctionData, encodeFunctionResult, parseAbi } from "viem";
 
 const PORT = Number(process.argv[2] ?? process.env.MOCK_PORT ?? 4010);
 
@@ -110,6 +111,95 @@ function detect(phone, iso) {
   return ops.find((o) => !o.data);
 }
 
+// ---------------------------------------------------------------------------
+// EVM state: ERC-20 balances, an Aave V4 MAG7-like spoke, CoW orders, receipts
+// ---------------------------------------------------------------------------
+const HUB = "0xa4d5947eb727a052bae69c593ffc84247ec9864e";
+const NVDAC = "0xb20000000000000000000078ee7ce2fe4908108c";
+const USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+const erc20 = new Map();
+const cowOrders = new Map();
+const evmTxs = new Map();
+let aavePosition = { supplied: 0n, debt: 0n, collateral: false };
+const SYMBOLS = { [NVDAC]: "NVDAc", [USDC]: "USDC" };
+
+const ABI = parseAbi([
+  "function balanceOf(address) view returns (uint256)",
+  "function symbol() view returns (string)",
+  "function getReserveCount() view returns (uint256)",
+  "function getReserve(uint256) view returns ((address underlying, address hub, uint16 assetId, uint8 decimals, uint24 collateralRisk, uint8 flags, uint32 dynamicConfigKey))",
+  "function getReserveConfig(uint256) view returns ((uint24 collateralRisk, bool paused, bool frozen, bool borrowable, bool receiveSharesEnabled))",
+  "function getDynamicReserveConfig(uint256, uint32) view returns ((uint16 collateralFactor, uint32 maxLiquidationBonus, uint16 liquidationFee))",
+  "function getUserAccountData(address) view returns ((uint256 riskPremium, uint256 avgCollateralFactor, uint256 healthFactor, uint256 totalCollateralValue, uint256 totalDebtValueRay, uint256 activeCollateralCount, uint256 borrowCount))",
+  "function getUserSuppliedAssets(uint256, address) view returns (uint256)",
+  "function getUserTotalDebt(uint256, address) view returns (uint256)",
+  "function getUserReserveStatus(uint256, address) view returns (bool, bool)",
+  "function getReservesPrices(uint256[]) view returns (uint256[])",
+  "function getAssetDrawnRate(uint256) view returns (uint256)",
+]);
+
+function tokenPrice(id) {
+  let h = 0;
+  for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return 100 + (h % 300);
+}
+
+const RESERVES = [
+  { underlying: NVDAC, hub: HUB, assetId: 1, decimals: 8, collateralRisk: 0, flags: 0, dynamicConfigKey: 0 },
+  { underlying: USDC, hub: HUB, assetId: 0, decimals: 6, collateralRisk: 0, flags: 0, dynamicConfigKey: 0 },
+];
+
+function evmCall(chainId, r) {
+  if (r.method === "eth_blockNumber") return { result: "0x1000" };
+  if (r.method === "eth_getTransactionReceipt" || r.method === "eth_getTransactionByHash") {
+    const t = evmTxs.get(String(r.params[0]).toLowerCase());
+    return { result: t ? { status: t.status ?? "0x1", from: t.from, to: t.to, blockNumber: "0xff0" } : null };
+  }
+  if (r.method !== "eth_call") return { error: { code: -32601, message: "unsupported" } };
+  const { to, data } = r.params[0];
+  const target = to.toLowerCase();
+  let call;
+  try {
+    call = decodeFunctionData({ abi: ABI, data });
+  } catch {
+    return { error: { code: 3, message: "execution reverted" } };
+  }
+  const enc = (result) => ({ result: encodeFunctionResult({ abi: ABI, functionName: call.functionName, result }) });
+  const a = call.args ?? [];
+  switch (call.functionName) {
+    case "balanceOf":
+      return enc(erc20.get(`${chainId}:${target}:${String(a[0]).toLowerCase()}`) ?? 0n);
+    case "symbol":
+      return enc(SYMBOLS[target] ?? "TKN");
+    case "getReserveCount":
+      return enc(BigInt(RESERVES.length));
+    case "getReserve":
+      return enc(RESERVES[Number(a[0])]);
+    case "getReserveConfig":
+      return enc({ collateralRisk: 0, paused: false, frozen: false, borrowable: Number(a[0]) === 1, receiveSharesEnabled: false });
+    case "getDynamicReserveConfig":
+      return enc({ collateralFactor: Number(a[0]) === 0 ? 5000 : 0, maxLiquidationBonus: 10500, liquidationFee: 1000 });
+    case "getReservesPrices":
+      return enc(a[0].map((id) => (Number(id) === 0 ? 180_00000000n : 1_00000000n)));
+    case "getAssetDrawnRate":
+      return enc(55n * 10n ** 24n); // 5.5% in RAY
+    case "getUserSuppliedAssets":
+      return enc(Number(a[0]) === 0 ? aavePosition.supplied : 0n);
+    case "getUserTotalDebt":
+      return enc(Number(a[0]) === 1 ? aavePosition.debt : 0n);
+    case "getUserReserveStatus":
+      return enc([Number(a[0]) === 0 && aavePosition.collateral, Number(a[0]) === 1 && aavePosition.debt > 0n]);
+    case "getUserAccountData": {
+      const collValue = (aavePosition.supplied * 180n * 10n ** 26n) / 10n ** 8n; // Value units: 1e26 per USD
+      const debtValueRay = (aavePosition.debt * 10n ** 26n * 10n ** 27n) / 10n ** 6n;
+      const hf = aavePosition.debt > 0n ? (collValue * 5000n * 10n ** 18n * 10n ** 27n) / 10000n / debtValueRay : 2n ** 255n;
+      return enc({ riskPremium: 50n, avgCollateralFactor: 5n * 10n ** 17n, healthFactor: hf, totalCollateralValue: collValue, totalDebtValueRay: debtValueRay, activeCollateralCount: 1n, borrowCount: aavePosition.debt > 0n ? 1n : 0n });
+    }
+    default:
+      return { error: { code: 3, message: "execution reverted" } };
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const p = url.pathname;
@@ -122,6 +212,26 @@ const server = http.createServer(async (req, res) => {
   }
   if (p === "/_test/polygon-tx" && req.method === "POST") {
     polyTxs.set(body.hash.toLowerCase(), body);
+    return send(res, 200, { ok: true });
+  }
+  if (p === "/_test/evm-balance" && req.method === "POST") {
+    erc20.set(`${body.chainId}:${body.token.toLowerCase()}:${body.owner.toLowerCase()}`, BigInt(body.amount));
+    return send(res, 200, { ok: true });
+  }
+  if (p === "/_test/aave-position" && req.method === "POST") {
+    aavePosition = {
+      supplied: BigInt(body.supplied ?? aavePosition.supplied),
+      debt: BigInt(body.debt ?? aavePosition.debt),
+      collateral: Boolean(body.collateral ?? aavePosition.collateral),
+    };
+    return send(res, 200, { ok: true });
+  }
+  if (p === "/_test/cow-order" && req.method === "POST") {
+    cowOrders.set(body.uid.toLowerCase(), body);
+    return send(res, 200, { ok: true });
+  }
+  if (p === "/_test/evm-tx" && req.method === "POST") {
+    evmTxs.set(body.hash.toLowerCase(), body);
     return send(res, 200, { ok: true });
   }
   if (p === "/_test/counters") return send(res, 200, { ...counters, topupsByCustomId: Object.fromEntries([...customIds.entries()]) });
@@ -222,8 +332,41 @@ const server = http.createServer(async (req, res) => {
     return err(res, 404, null, "No message available");
   }
 
-  // ---- CoinGecko
-  if (p === "/coingecko/api/v3/simple/price") return send(res, 200, { "nimiq-2": { usd: 0.0012 }, tether: { usd: 1.0 } });
+  // ---- CoinGecko (any id; stock tokens get a deterministic price)
+  if (p === "/coingecko/api/v3/simple/price") {
+    const out = {};
+    for (const id of (url.searchParams.get("ids") ?? "").split(",").filter(Boolean)) {
+      out[id] = id === "nimiq-2" ? { usd: 0.0012, usd_24h_change: 1.5 } : id === "tether" ? { usd: 1.0, usd_24h_change: 0 } : { usd: tokenPrice(id), usd_24h_change: 1.2 };
+    }
+    return send(res, 200, out);
+  }
+  if (p.startsWith("/coingecko/api/v3/coins/") && p.endsWith("/market_chart")) {
+    const id = p.split("/")[5];
+    const now = Date.now();
+    return send(res, 200, { prices: Array.from({ length: 30 }, (_, i) => [now - (29 - i) * 86400000, +(tokenPrice(id) * (0.9 + i * 0.004)).toFixed(2)]) });
+  }
+
+  // ---- CoW Protocol order book
+  let cm;
+  if ((cm = p.match(/^\/cow\/([a-z_]+)\/api\/v1\/orders\/(0x[0-9a-fA-F]+)$/))) {
+    const o = cowOrders.get(cm[2].toLowerCase());
+    return o ? send(res, 200, o) : send(res, 404, { errorType: "NotFound" });
+  }
+
+  // ---- Batched EVM JSON-RPC per chain: /evm/<chainId>
+  let em;
+  if ((em = p.match(/^\/evm\/(\d+)$/)) && req.method === "POST") {
+    const chainId = Number(em[1]);
+    const reqs = Array.isArray(body) ? body : [body];
+    const out = reqs.map((r) => {
+      try {
+        return { jsonrpc: "2.0", id: r.id, ...evmCall(chainId, r) };
+      } catch (e) {
+        return { jsonrpc: "2.0", id: r.id, error: { code: -32603, message: String(e.message) } };
+      }
+    });
+    return send(res, 200, Array.isArray(body) ? out : out[0]);
+  }
 
   // ---- Nimiq RPC
   if (p === "/nimiq" && req.method === "POST") {

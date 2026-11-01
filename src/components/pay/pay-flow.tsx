@@ -780,7 +780,6 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
     }
   }, [q, order, w, onSubmitted, networkMismatch, status]);
 
-  const payLabel = `Pay ${fmtCrypto(q.payAmount, q.payCurrency)}`;
 
   return (
     <div className="space-y-4">
@@ -799,7 +798,7 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
         </div>
 
         <div className="mt-4 border-t border-line pt-2">
-          <KV k="To" v={`${country?.flag ?? ""} ${order.recipient}`} />
+          <KV k="To" v={`${country?.flag ?? ""} ${order.service === "electricity" ? order.recipient : `+${order.recipient}`}`} />
           <KV k="Provider" v={order.operatorName} />
           {order.productDescription ? <KV k="Product" v={order.productDescription} /> : null}
           {order.amountLocal !== null && order.localCurrency ? <KV k="They receive" v={fmtMoney(order.amountLocal, order.localCurrency)} /> : null}
@@ -844,7 +843,7 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
         </Button>
       ) : (
         <>
-          <SlideToConfirm label={busy ? "Waiting for your wallet…" : `Slide to ${payLabel.toLowerCase()}`} loading={busy} disabled={Boolean(error?.unknown) || Boolean(networkMismatch)} onConfirm={() => void confirm()} />
+          <SlideToConfirm label={busy ? "Waiting for your wallet…" : `Slide to pay ${fmtCrypto(q.payAmount, q.payCurrency)}`} loading={busy} disabled={Boolean(error?.unknown) || Boolean(networkMismatch)} onConfirm={() => void confirm()} />
           <p className="num text-center text-xs text-fg-3">
             Price held for {mm}:{String(ss).padStart(2, "0")} · Ref {order.ref}
           </p>

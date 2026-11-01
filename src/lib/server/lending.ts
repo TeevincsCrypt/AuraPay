@@ -11,7 +11,7 @@ import {
   SPOKE_ABI,
   VALUE_PER_USD,
   WAD,
-  tickerForReserveSymbol,
+  tickerForReserve,
 } from "@/lib/shared/aave";
 import { verifiedEvmAddresses } from "./auth/challenges";
 import { getDb } from "./db";
@@ -133,10 +133,17 @@ export async function getBorrowOverview(userId: string): Promise<BorrowOverviewD
       { to: AAVE_MAG7_SPOKE, abi: spokeAbi, functionName: "getUserTotalDebt", args: [BigInt(m.reserveId), owner] },
       { to: AAVE_MAG7_SPOKE, abi: spokeAbi, functionName: "getUserReserveStatus", args: [BigInt(m.reserveId), owner] },
     ]);
-    const [res, acct] = await Promise.all([
-      readContracts(AAVE_CHAIN_ID, calls),
-      readContracts(AAVE_CHAIN_ID, [{ to: AAVE_MAG7_SPOKE, abi: spokeAbi, functionName: "getUserAccountData", args: [owner] }]),
-    ]);
+    let res: unknown[];
+    let acct: unknown[];
+    try {
+      [res, acct] = await Promise.all([
+        readContracts(AAVE_CHAIN_ID, calls),
+        readContracts(AAVE_CHAIN_ID, [{ to: AAVE_MAG7_SPOKE, abi: spokeAbi, functionName: "getUserAccountData", args: [owner] }]),
+      ]);
+    } catch (err) {
+      log.warn("aave.position_failed", { error: errorMessage(err) });
+      return { available: false, reason: "Couldn't read your Aave position on Base right now. Please try again shortly.", chainId: AAVE_CHAIN_ID, spoke: AAVE_MAG7_SPOKE, owner, reserves: [], account: null };
+    }
     meta.forEach((m, i) => {
       const n = (v: unknown) => (typeof v === "bigint" ? Number(formatUnits(v, m.decimals)) : 0);
       const status = res[i * 4 + 3] as [boolean, boolean] | null;
@@ -170,7 +177,7 @@ export async function getBorrowOverview(userId: string): Promise<BorrowOverviewD
     return {
       reserveId: m.reserveId,
       symbol: m.symbol,
-      ticker: tickerForReserveSymbol(m.symbol),
+      ticker: tickerForReserve(m.underlying),
       underlying: m.underlying,
       decimals: m.decimals,
       priceUsd: m.priceUsd,
@@ -216,7 +223,9 @@ export async function recordLendingAction(
 ) {
   const owners = await verifiedEvmAddresses(userId);
   if (!owners.includes(input.owner.toLowerCase())) throw new AppError("WALLET_NOT_VERIFIED", "This wallet isn't verified for your account.", 403);
-  const meta = await loadReserves();
+  const meta = await loadReserves().catch(() => {
+    throw new AppError("LENDING_UNAVAILABLE", "Couldn't reach Aave on Base. Your transaction was sent; refresh shortly to record it.", 503);
+  });
   const reserve = input.reserveId !== null ? meta.find((m) => m.reserveId === input.reserveId) : undefined;
   if (input.reserveId !== null && !reserve) throw new AppError("RESERVE_NOT_FOUND", "Unknown Aave reserve.", 422);
 
@@ -271,7 +280,7 @@ export async function refreshLendingAction(userId: string, txHash: string) {
     const meta = await loadReserves();
     expectTo = meta.find((m) => m.reserveId === a.reserve_id)?.underlying;
   }
-  const check = await checkTransaction(AAVE_CHAIN_ID, txHash, { from: a.owner, to: expectTo });
+  const check = await checkTransaction(AAVE_CHAIN_ID, txHash, { from: a.owner, to: expectTo }).catch(() => ({ state: "pending" as const }));
   if (check.state === "pending") return { status: "submitted" };
   const status = check.state === "confirmed" ? "confirmed" : "failed";
   await db.transaction(async (tx) => {

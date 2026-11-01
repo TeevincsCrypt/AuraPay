@@ -69,9 +69,16 @@ function RemoteSignIn({ onDone }: { onDone?: () => void }) {
     onDoneRef.current = onDone;
   });
 
+  // Keep stable references: the session context object changes identity on every refresh,
+  // and restarting would silently replace the code the user is looking at.
+  const sessionRef = useRef(session);
+  useEffect(() => {
+    sessionRef.current = session;
+  });
+
   const start = useCallback(async () => {
     try {
-      const r = await session.startRemote();
+      const r = await sessionRef.current.startRemote();
       setReq(r);
       setQr(await QRCode.toDataURL(r.deepLink, { margin: 1, width: 480, color: { dark: "#111111", light: "#ffffff" } }));
       setStatus("waiting");
@@ -79,7 +86,7 @@ function RemoteSignIn({ onDone }: { onDone?: () => void }) {
       setError((e as Error).message);
       setStatus("error");
     }
-  }, [session]);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -95,7 +102,7 @@ function RemoteSignIn({ onDone }: { onDone?: () => void }) {
     let stopped = false;
     const tick = async () => {
       try {
-        const s = await session.pollRemote(req);
+        const s = await sessionRef.current.pollRemote(req);
         if (stopped) return;
         if (s === "approved") return onDoneRef.current?.();
         if (s === "expired" || s === "consumed") return setStatus("expired");
@@ -109,7 +116,7 @@ function RemoteSignIn({ onDone }: { onDone?: () => void }) {
       stopped = true;
       clearTimeout(t);
     };
-  }, [req, status, session]);
+  }, [req, status]);
 
   if (status === "loading") return <div className="grid place-items-center py-10"><Spinner /></div>;
   if (status === "error") return <Notice tone="error" action={<Button size="sm" variant="secondary" onClick={() => { setStatus("loading"); void start(); }}>Try again</Button>}>{error}</Notice>;

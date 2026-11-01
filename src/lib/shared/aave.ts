@@ -11,6 +11,8 @@
  * and risk premium are BPS; oracle prices have 8 decimals; drawn rate is RAY per year.
  */
 
+import { STOCK_TOKENS } from "./stock-tokens";
+
 export const AAVE_CHAIN_ID = 8453;
 export const AAVE_CHAIN_HEX = "0x2105";
 export const AAVE_MAG7_SPOKE = "0x17905Db0e4A3514467539956c084180616AE7B8D" as const;
@@ -184,8 +186,14 @@ export const HUB_ABI = [
   },
 ] as const;
 
-/** Stock ticker for a MAG7 collateral token symbol (e.g. "NVDAc" → "NVDA"). */
-export function tickerForReserveSymbol(sym: string): string | null {
-  const m = /^([A-Z]+)[cC]$/.exec(sym);
-  return m ? m[1] : null;
+/**
+ * Stock ticker for an Aave reserve, identified by its underlying token address in the
+ * tokenised-stock registry (never guessed from the symbol: "USDC" also ends in "C").
+ */
+export function tickerForReserve(underlying: string): string | null {
+  const u = underlying.toLowerCase();
+  for (const [ticker, reg] of Object.entries(STOCK_TOKENS)) {
+    if (reg.all.some((t) => t.chainId === AAVE_CHAIN_ID && t.address.toLowerCase() === u)) return ticker;
+  }
+  return null;
 }

@@ -2,137 +2,97 @@
 
 **Your money. Without borders.**
 
-AuraPay is a Nimiq Pay Mini App that connects African users to three things:
+AuraPay is a Nimiq Pay Mini App for African users:
 
-1. **Pay** — airtime, mobile data and electricity across Nigeria, Ghana, Kenya, Uganda, South Africa and Tanzania, paid with **NIM** or **USDT** through Nimiq Pay (Reloadly for fulfilment).
-2. **Invest** — discover US stocks (NVIDIA, Apple, Microsoft, Tesla, …) with live prices, charts and a full purchase-review flow.
-3. **Borrow** — see how much USDT your investments could unlock, with LTV, interest and liquidation shown up front.
+1. **Pay**: airtime, mobile data and electricity in Nigeria, Ghana, Kenya, Uganda, South Africa and Tanzania, paid with **NIM** or **USDT** (fulfilled by Reloadly).
+2. **Invest**: tokenised US stocks (NVIDIA, Apple, Microsoft, Tesla, Amazon, Alphabet, Meta, AMD, Netflix, Coinbase), bought through CoW Protocol and held in your own wallet.
+3. **Borrow**: USDC against your stock tokens through Aave V4 on Base, without selling them.
 
-Built for the Nimiq Mini Apps Hackathon.
-
-> **What's real and what's simulated** is documented in [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) and shown in-app at **/status**. In short: wallet connection, NIM/USDT payments, on-chain payment verification, Reloadly (sandbox or production), exchange rates and market data (with keys) are real. Stock execution and lending have no provider credentials yet, so they run as clearly labelled simulators — they never take payment and never claim you own shares or received USDT.
+Everything is real: there is no demo mode and no simulated data. Users sign in with a **Nimiq Pay wallet signature**, inside the app with one tap, or from any other browser by approving a QR code / code in Nimiq Pay. Details: [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md). Live integration state: **/status**.
 
 ---
 
 ## Stack
 
 * Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS 4
-* `@nimiq/mini-app-sdk` (Nimiq provider) + EIP-1193 `window.ethereum` (USDT on Polygon) + `viem` for ABI encoding
-* Postgres (Supabase) via `postgres`; embedded **PGlite** fallback for zero-config dev/demo — both run the same SQL migrations
-* Zod validation, `libphonenumber-js`, hand-built SVG charts
+* `@nimiq/mini-app-sdk` (NIM, signatures) + EIP-1193 `window.ethereum` (USDT, stocks, Aave) + `viem`
+* `@cowprotocol/widget-lib` (stock purchases), Aave V4 contracts on Base
+* Postgres / Supabase (`postgres`), embedded PGlite for local development only
+* `@noble/curves` + `@noble/hashes` (Nimiq signature verification), Zod, `libphonenumber-js`, `qrcode`
 
 ```
-src/
-  app/                    pages (Home, Invest, Borrow, Pay, Activity, Status) and /api route handlers
-  components/             design system (ui.tsx), charts, shell (nav), pay flow, receipts
-  lib/client/             API client, wallet provider (Nimiq + EVM), hooks
-  lib/server/             config/modes, db, sessions, rate limiting, Reloadly client & catalogue,
-                          payment verification (nimiq.ts, polygon.ts), order orchestration,
-                          market data, investing & lending simulators, ledger
-  lib/shared/             types, formatting, target countries
-supabase/migrations/      schema (RLS deny-by-default)
-scripts/                  mock providers + end-to-end API and browser tests
-docs/INTEGRATIONS.md      integration details, payment state machine, provider research
+src/app/                pages: landing/home, invest, borrow, pay, activity, status, auth/approve; /api routes
+src/components/         design system (ui.tsx), charts, shell (floating nav), landing, auth, pay, invest
+src/lib/client/         wallet provider (Nimiq + EVM), session (sign-in), API client, hooks
+src/lib/server/auth/    Nimiq signature verification, challenges (local/remote/EVM link)
+src/lib/server/         config, db, sessions, Reloadly, payment verification, orders, market data,
+                        investing (CoW + on-chain holdings), lending (Aave V4), EVM RPC, ledger
+src/lib/shared/         types, stock-token registry, Aave constants/ABI, countries, formatting
+supabase/migrations/    schema + auth/real-mode migration (RLS deny-by-default)
+scripts/                mock providers, API tests, Playwright UI tests
 ```
 
-## Quick start (local)
+## Run locally
 
 ```bash
 npm install
-cp .env.example .env.local      # fill in what you have; everything is optional in development
-npm run dev                     # http://localhost:3000
+cp .env.example .env.local     # set at least SESSION_SECRET; add provider credentials as you have them
+npm run dev -- -H 0.0.0.0      # http://localhost:3000
 ```
 
-With no configuration you get: the full UI, an embedded database (`.data/pglite`), demo market prices (labelled **DEMO DATA**), the investing and lending simulators, and the Pay screen reporting "provider offline". Add credentials to switch features on:
+Without `DATABASE_URL`, development uses embedded PGlite (`.data/pglite`). Open the app inside Nimiq Pay (Mini Apps → custom URL `http://<lan-ip>:3000`), or in a desktop browser and sign in with the QR code.
 
-| To enable | Set |
+| Feature | Needs |
 |---|---|
-| Utility payments (sandbox) | `RELOADLY_CLIENT_ID`, `RELOADLY_CLIENT_SECRET`, `RELOADLY_MODE=sandbox` |
+| Sign-in | `SESSION_SECRET` (and `APP_URL` in production) |
+| Utilities | `RELOADLY_CLIENT_ID`, `RELOADLY_CLIENT_SECRET` (`RELOADLY_MODE=sandbox` for testing) |
 | Pay with NIM | `NIMIQ_MERCHANT_ADDRESS`, `NIMIQ_NETWORK`, `NIMIQ_RPC_URL` |
-| Pay with USDT | `POLYGON_MERCHANT_ADDRESS` (+ `POLYGON_RPC_URL`) |
-| Live stock prices / charts | `FINNHUB_API_KEY`, `TWELVEDATA_API_KEY` |
-| Persistent Postgres | `DATABASE_URL` (+ `DB_AUTO_MIGRATE=true` or `supabase db push`) |
-| Admin reconciliation | `ADMIN_API_TOKEN` |
+| Pay with USDT | `POLYGON_MERCHANT_ADDRESS` |
+| Prices, investing, borrowing | nothing extra (public CoinGecko + public RPCs; set your own RPCs/keys for volume) |
+| Listed share prices | optional `FINNHUB_API_KEY`, `TWELVEDATA_API_KEY` |
 
-### Modes (`APP_MODE`)
+To test payments without real money, use Reloadly **sandbox** with Nimiq **testnet** (`RELOADLY_MODE=sandbox`, `NIMIQ_NETWORK=testnet`). Get free testnet NIM in Nimiq Pay's testnet mode (long-press settings for 10 s). Sandbox orders are labelled TEST. USDT (Polygon mainnet) is disabled for sandbox top-ups.
 
-| Mode | Simulators | Database | Use for |
-|---|---|---|---|
-| `development` | on | PGlite or Postgres | local work |
-| `demo` | on | PGlite or Postgres | public browser demos; simulated payments allowed **only** with Reloadly sandbox |
-| `sandbox` | off | Postgres required | real Nimiq Pay payments on **testnet NIM** + Reloadly sandbox |
-| `production` | off | Postgres required | real money, Reloadly production; test overrides ignored |
+## Deploy (Vercel + Supabase)
 
-AuraPay never silently falls back to fake behaviour: if an integration is missing, the feature says so.
+1. Create a Supabase project. Apply migrations with `supabase db push` (or set `DB_AUTO_MIGRATE=true`).
+2. Import the repo in Vercel and set the variables from `.env.example`: at minimum `APP_URL`, `SESSION_SECRET`, `DATABASE_URL` (transaction pooler, port 6543), the Reloadly credentials, and the NIM/USDT merchant settings.
+3. Deploy, check `/status`, then open `https://nimpay.app/miniapps/open/<your-domain>` on a phone.
 
-## Testing inside Nimiq Pay
-
-1. Run `npm run dev -- -H 0.0.0.0` and find your LAN IP.
-2. In Nimiq Pay → Mini Apps, enter `http://<lan-ip>:3000` as a custom URL.
-3. Switch Nimiq Pay to **testnet** (app menu → long-press settings for 10 s), tap **Get free NIM**.
-4. Set `NIMIQ_NETWORK=testnet`, a testnet `NIMIQ_MERCHANT_ADDRESS` and a testnet `NIMIQ_RPC_URL`, plus Reloadly sandbox credentials.
-5. Pay → Nigeria → Airtime → approve in Nimiq Pay. The order is fulfilled only after the server verifies the transaction on-chain.
-
-Share a deployed build with `https://nimpay.app/miniapps/open/<your-domain>`.
-
-## Database (Supabase)
-
-```bash
-# Option A — Supabase CLI
-supabase link --project-ref <ref>
-supabase db push                     # applies supabase/migrations
-
-# Option B — let AuraPay migrate on first connection
-DATABASE_URL=postgres://...  DB_AUTO_MIGRATE=true
-```
-
-All tables have RLS enabled with no policies and `anon`/`authenticated` privileges revoked; only the server connection can read or write.
-
-## Deploying to Vercel
-
-1. Import the repository in Vercel (framework preset: Next.js; build `next build`).
-2. Create a Supabase project and copy the **transaction pooler** connection string (port `6543`) into `DATABASE_URL`. Apply migrations (above).
-3. Add environment variables from `.env.example`. Minimum for a hackathon demo:
-   `APP_MODE=demo`, `SESSION_SECRET`, `DATABASE_URL`, `RELOADLY_CLIENT_ID`, `RELOADLY_CLIENT_SECRET`, `RELOADLY_MODE=sandbox`, `FINNHUB_API_KEY`, `TWELVEDATA_API_KEY`, and for wallet payments `NIMIQ_NETWORK=testnet`, `NIMIQ_MERCHANT_ADDRESS`, `NIMIQ_RPC_URL`.
-4. Deploy, open `/status` to confirm each integration, then open the app in Nimiq Pay.
-
-Without `DATABASE_URL`, a `demo` deployment on Vercel uses in-memory PGlite (data resets on cold starts — fine for a quick look, not for judging persistence).
+For production, use your own Nimiq node or RPC provider (`NIMIQ_RPC_URL`) and dedicated EVM RPCs (`BASE_RPC_URL`, `ARBITRUM_RPC_URL`, `ETHEREUM_RPC_URL`, `POLYGON_RPC_URL`). The open defaults are rate-limited.
 
 ## Tests
 
-Everything external can be exercised offline against `scripts/mock-providers.mjs`, a local stand-in shaped after Reloadly's OpenAPI specs and the Nimiq / Polygon JSON-RPC APIs.
+All external services are mocked locally by `scripts/mock-providers.mjs` (shaped after Reloadly's OpenAPI specs, Nimiq/EVM JSON-RPC, CoW's order book and Aave V4's ABI). The suites enable them with `AURAPAY_TEST_MODE=true` plus the override URLs listed in `.env.example`.
 
 ```bash
 npm run build
-npm run mock &                                   # mock providers on :4010
-# start the app with the TEST ONLY overrides from .env.example, plus e.g.:
-#   RELOADLY_CLIENT_ID=mock-client RELOADLY_CLIENT_SECRET=mock-secret
-#   NIMIQ_MERCHANT_ADDRESS="NQ07 0000 0000 0000 0000 0000 0000 0000 0000" NIMIQ_RPC_URL=http://localhost:4010/nimiq
-#   POLYGON_MERCHANT_ADDRESS=0x1111111111111111111111111111111111111111 POLYGON_RPC_URL=http://localhost:4010/polygon
-#   ALLOW_REAL_PAYMENTS_FOR_SANDBOX=true ADMIN_API_TOKEN=test-admin-token-123 RATE_LIMIT_MULTIPLIER=10 PGLITE_DIR=memory
-npm start &
-npm run test:api     # 32 API tests: pricing, idempotency, NIM/USDT verification, tx reuse,
-                     # memo/amount mismatch, pending→confirmed, concurrent fulfilment,
-                     # provider failure → review → verified refund, session isolation, simulators
-npm run test:ui      # Playwright: every section at mobile + desktop, demo and NIM purchase flows,
-                     # simulated Nimiq Pay host, console-error check
+npm run mock &
+AURAPAY_TEST_MODE=true RELOADLY_CLIENT_ID=mock-client RELOADLY_CLIENT_SECRET=mock-secret RELOADLY_MODE=sandbox \
+  NIMIQ_NETWORK=testnet NIMIQ_MERCHANT_ADDRESS="NQ07 0000 0000 0000 0000 0000 0000 0000 0000" NIMIQ_RPC_URL=http://localhost:4010/nimiq \
+  POLYGON_MERCHANT_ADDRESS=0x1111111111111111111111111111111111111111 POLYGON_RPC_URL=http://localhost:4010/polygon \
+  ALLOW_REAL_PAYMENTS_FOR_SANDBOX=true ADMIN_API_TOKEN=test-admin-token-123 RATE_LIMIT_MULTIPLIER=10 PGLITE_DIR=memory \
+  RELOADLY_AUTH_URL_OVERRIDE=http://localhost:4010/auth/oauth/token RELOADLY_AIRTIME_URL_OVERRIDE=http://localhost:4010/airtime \
+  RELOADLY_UTILITIES_URL_OVERRIDE=http://localhost:4010/utilities COINGECKO_URL_OVERRIDE=http://localhost:4010/coingecko \
+  EVM_RPC_URL_OVERRIDE=http://localhost:4010/evm COW_API_URL_OVERRIDE=http://localhost:4010/cow npm start &
+npm run test:api   # 34 tests: sign-in (local, remote, tampering, replay), EVM linking, NIM/USDT verification,
+                   # idempotency, exactly-once fulfilment, refunds, isolation, holdings, CoW orders, Aave
+npm run test:ui    # Playwright: landing, QR sign-in, simulated Nimiq Pay host with real signatures,
+                   # every page at mobile + desktop, keypad + slide-to-pay purchase, borrow, buy sheet
 ```
 
-`npm run typecheck` and `npm run lint` must be clean.
+`npm run typecheck` and `npm run lint` are clean.
 
 ## Admin API
 
 ```bash
 curl -H "Authorization: Bearer $ADMIN_API_TOKEN" https://<host>/api/admin/orders
 curl -X POST -H "Authorization: Bearer $ADMIN_API_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"refundTxHash":"<hash>"}' https://<host>/api/admin/orders/<id>/refund      # verified on-chain
-curl -X POST -H "Authorization: Bearer $ADMIN_API_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"status":"successful","note":"Confirmed with Reloadly support"}' https://<host>/api/admin/orders/<id>/resolve
+  -d '{"refundTxHash":"<hash>"}' https://<host>/api/admin/orders/<id>/refund     # verified on-chain
 ```
 
 ## Known limitations
 
-* No brokerage or lending provider is integrated (see the research notes in `docs/INTEGRATIONS.md`); those features are simulators in development/demo modes and unavailable in sandbox/production.
-* Sessions are anonymous device sessions. Signature-based login (`nimiq.sign` + server verification) is the next step for multi-device accounts.
+* Tokenised stocks are subject to issuer eligibility rules (enforced by the CoW widget), and cross-chain buys depend on CoW's bridge routes being available.
+* Aave V4's MAG7 market lends **USDC** (not USDT). Users need ETH on Base for gas.
 * Rate limiting is per server instance.
-* Refunds are executed by an operator from the merchant wallet (AuraPay holds no signing keys server-side) and then verified on-chain.
