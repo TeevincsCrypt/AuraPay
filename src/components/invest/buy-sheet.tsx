@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createCowSwapWidget, TradeType, type CowSwapWidgetHandler, type CowSwapWidgetParams } from "@cowprotocol/widget-lib";
 import { CowWidgetEvents } from "@cowprotocol/events";
 import { CheckCircle2, ExternalLink, Wallet } from "lucide-react";
 import { api } from "@/lib/client/api";
 import { useSession } from "@/lib/client/session";
 import { useWallet, WalletActionError } from "@/lib/client/wallet";
-import { CHAIN_NAMES, ISSUER_LEGAL_URL, STOCK_TOKENS } from "@/lib/shared/stock-tokens";
+import { CHAIN_NAMES, ISSUER_LEGAL_URL, STOCK_TOKENS, USDC_BY_CHAIN, USDT_POLYGON } from "@/lib/shared/stock-tokens";
 import type { StockQuote } from "@/lib/shared/types";
 import { Button, Notice, Segmented, Sheet, Spinner } from "../ui";
 
@@ -18,6 +18,11 @@ import { Button, Notice, Segmented, Sheet, Spinner } from "../ui";
  * posted order and verifies it against CoW's order book; holdings are read on-chain.
  */
 
+/**
+ * Two steps, because CoW's cross-chain swaps only deliver bridgeable tokens (e.g. USDC),
+ * not stock tokens: 1) move Nimiq Pay's USDT (Polygon) to USDC on the stock's chain,
+ * 2) buy the stock token with that USDC on the same chain.
+ */
 type Funding = "polygon-usdt" | "same-chain";
 
 const PALETTE = {
@@ -33,28 +38,25 @@ const PALETTE = {
   success: "#13a05b",
 };
 
-const USDT_POLYGON = "0xc2132D05D31c914a87C6611C10748aEb04B58e8F";
-const USDC_BY_CHAIN: Record<number, string> = {
-  8453: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // Base
-  42161: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", // Arbitrum
-};
-
 export function BuySheet({ open, onClose, quote }: { open: boolean; onClose: () => void; quote: StockQuote }) {
   const w = useWallet();
   const session = useSession();
   const reg = STOCK_TOKENS[quote.symbol];
   const token = reg?.primary;
   const [funding, setFunding] = useState<Funding>("polygon-usdt");
+  const [usdc, setUsdc] = useState<number | null>(null);
+  const autoPicked = useRef(false);
   const [linking, setLinking] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [posted, setPosted] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   // The widget follows the wallet's current network, so the wallet must be on the
   // network we're paying from before the widget loads (otherwise it shows its defaults).
-  const [chainState, setChainState] = useState<"switching" | "ready" | "failed">("switching");
   const [chainAttempt, setChainAttempt] = useState(0);
+  const [chainResult, setChainResult] = useState<{ key: string; ok: boolean } | null>(null);
   const [cfg, setCfg] = useState<{ appCode: string; partnerFee: { bps: number; recipient: string } | null } | null>(null);
   const container = useRef<HTMLDivElement>(null);
+  const usdcRef = useRef<number | null>(null);
   const handler = useRef<CowSwapWidgetHandler | null>(null);
 
   const verified = session.user?.evmAddresses ?? [];
@@ -71,14 +73,43 @@ export function BuySheet({ open, onClose, quote }: { open: boolean; onClose: () 
     };
   }, [open, cfg]);
 
+  // USDC already on the stock's chain decides where to start, and is polled while funding.
+  const owner = session.user?.evmAddresses[0] ?? null;
+  const loadUsdc = useCallback(async () => {
+    if (!owner || !token) return;
+    try {
+      const r = await api<{ balance: number }>(`/api/wallet/usdc-balance?address=${owner}&chainId=${token.chainId}`);
+      setUsdc(r.balance);
+      usdcRef.current = r.balance;
+      if (!autoPicked.current) {
+        autoPicked.current = true;
+        if (r.balance >= 1) setFunding("same-chain");
+      }
+    } catch {
+      setUsdc(null);
+    }
+  }, [owner, token]);
+  useEffect(() => {
+    if (!open) return;
+    const first = setTimeout(() => void loadUsdc(), 0);
+    const t = setInterval(() => void loadUsdc(), 20_000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(t);
+    };
+  }, [open, loadUsdc]);
+
   const sellChainId = funding === "same-chain" ? (token?.chainId ?? 8453) : 137;
+  // Derived: a result only counts for the current network + attempt.
+  const chainState: "switching" | "ready" | "failed" =
+    chainResult?.key === `${sellChainId}:${chainAttempt}` ? (chainResult.ok ? "ready" : "failed") : "switching";
   useEffect(() => {
     if (!open || !canTrade) return;
     let alive = true;
-    setChainState("switching");
+    const key = `${sellChainId}:${chainAttempt}`;
     w.ensureChain(`0x${sellChainId.toString(16)}`)
-      .then(() => alive && setChainState("ready"))
-      .catch(() => alive && setChainState("failed"));
+      .then(() => alive && setChainResult({ key, ok: true }))
+      .catch(() => alive && setChainResult({ key, ok: false }));
     return () => {
       alive = false;
     };
@@ -100,8 +131,8 @@ export function BuySheet({ open, onClose, quote }: { open: boolean; onClose: () 
       tradeType: TradeType.SWAP,
       enabledTradeTypes: [TradeType.SWAP],
       // Exact token addresses: USDT on Polygon (Nimiq Pay's USDT) or USDC on the stock's chain.
-      sell: { asset: sameChain ? (USDC_BY_CHAIN[token.chainId] ?? "USDC") : USDT_POLYGON, amount: "25" },
-      buy: { asset: token.address },
+      sell: { asset: sameChain ? (USDC_BY_CHAIN[token.chainId] ?? "USDC") : USDT_POLYGON, amount: sameChain && usdcRef.current ? String(Math.floor(usdcRef.current * 100) / 100) : "25" },
+      buy: { asset: sameChain ? token.address : (USDC_BY_CHAIN[token.chainId] ?? "USDC") },
       customTokens: reg.all.map((t) => ({ chainId: t.chainId, address: t.address, name: `${quote.name} (${t.issuer})`, decimals: t.decimals, symbol: t.symbol })),
       standaloneMode: false,
       disableCustomRecipient: true,
@@ -127,6 +158,8 @@ export function BuySheet({ open, onClose, quote }: { open: boolean; onClose: () 
           event: CowWidgetEvents.ON_POSTED_ORDER,
           handler: (p) => {
             setPosted(p.orderUid);
+            // Step 1 only moves money (USDT → USDC); only stock purchases are recorded as trades.
+            if (!sameChain) return;
             void api("/api/invest/trades", {
               method: "POST",
               json: {
@@ -196,46 +229,53 @@ export function BuySheet({ open, onClose, quote }: { open: boolean; onClose: () 
           ) : (
             <>
               <div>
-                <p className="mb-2 text-[13px] font-medium text-fg-2">Pay with</p>
                 <Segmented<Funding>
                   className="w-full"
                   value={funding}
                   onChange={(v) => {
                     setReady(false);
+                    setPosted(null);
                     setFunding(v);
                   }}
                   options={[
-                    { value: "polygon-usdt", label: "USDT · Polygon" },
-                    { value: "same-chain", label: `USDC · ${CHAIN_NAMES[token.chainId]}` },
+                    { value: "polygon-usdt", label: "1 · Add funds" },
+                    { value: "same-chain", label: `2 · Buy ${quote.symbol}` },
                   ]}
                 />
                 <p className="mt-2 text-xs text-fg-3">
-                  {funding === "polygon-usdt"
-                    ? `Uses the USDT in your Nimiq Pay wallet. The stock token is delivered to ${CHAIN_NAMES[token.chainId]} via CoW Protocol's cross-chain swap.`
-                    : `Uses USDC you already hold on ${CHAIN_NAMES[token.chainId]}.`}{" "}
-                  Network fees apply.
+                  USDC on {CHAIN_NAMES[token.chainId]}: <strong className="text-fg-2">{usdc === null ? "…" : `$${usdc.toFixed(2)}`}</strong>
                 </p>
               </div>
               {posted ? (
-                <Notice tone="success" title="Order placed">
-                  We&apos;ll confirm it against CoW Protocol&apos;s order book. It appears in Activity, and the tokens in your portfolio once settled.
-                </Notice>
+                funding === "polygon-usdt" ? (
+                  <Notice tone="success" title="Funds on the way" action={<Button size="sm" variant="secondary" onClick={() => { setReady(false); setPosted(null); setFunding("same-chain"); }}>Go to step 2</Button>}>
+                    Your USDT is being converted to USDC on {CHAIN_NAMES[token.chainId]}. This usually takes a few minutes; the balance above updates by itself. Then buy {quote.symbol} in step 2.
+                  </Notice>
+                ) : (
+                  <Notice tone="success" title="Order placed">
+                    We&apos;ll confirm it against CoW Protocol&apos;s order book. It appears in Activity, and {token.symbol} in your portfolio once settled.
+                  </Notice>
+                )
               ) : null}
               {err ? <Notice tone="error">{err}</Notice> : null}
               <ol className="space-y-1.5 rounded-[20px] bg-surface-2 p-4 text-[13px] text-fg-2">
-                <li>
-                  <strong className="text-fg">1.</strong> Type how much {funding === "polygon-usdt" ? "USDT" : "USDC"} to spend in the top box. The bottom box shows the {token.symbol} you&apos;ll get.
-                </li>
-                <li>
-                  <strong className="text-fg">2.</strong> Tap the button, approve {funding === "polygon-usdt" ? "USDT" : "USDC"} once, then confirm the order in your wallet.
-                </li>
-                <li>
-                  <strong className="text-fg">3.</strong> {token.symbol} arrives in your wallet on {CHAIN_NAMES[token.chainId]}, usually within minutes. It shows in Invest → Portfolio.
-                </li>
+                {funding === "polygon-usdt" ? (
+                  <>
+                    <li className="font-medium text-fg">Step 1: move USDT from Nimiq Pay to {CHAIN_NAMES[token.chainId]}</li>
+                    <li>Enter how much USDT to move. You&apos;ll receive about the same in USDC on {CHAIN_NAMES[token.chainId]}, where {quote.name} trades.</li>
+                    <li>Tap the button, approve USDT once, and confirm in your wallet. Skip this step if you already have USDC on {CHAIN_NAMES[token.chainId]}.</li>
+                  </>
+                ) : (
+                  <>
+                    <li className="font-medium text-fg">Step 2: buy {quote.name}</li>
+                    <li>Enter how much USDC to spend; the bottom box shows the {token.symbol} you&apos;ll get.</li>
+                    <li>Tap the button, approve USDC once, and confirm. {token.symbol} arrives in your wallet within minutes and shows in Invest → Portfolio.</li>
+                  </>
+                )}
               </ol>
               {chainState === "failed" ? (
                 <Notice tone="warn" title={`Switch to ${CHAIN_NAMES[sellChainId] ?? "the right network"}`} action={<Button size="sm" variant="secondary" onClick={() => setChainAttempt((n) => n + 1)}>Try again</Button>}>
-                  Your wallet needs to be on {CHAIN_NAMES[sellChainId] ?? "the paying network"} to pay with {funding === "polygon-usdt" ? "USDT" : "USDC"}. Approve the network switch in Nimiq Pay.
+                  Your wallet needs to be on {CHAIN_NAMES[sellChainId] ?? "the paying network"} for this step. Approve the network switch in Nimiq Pay.
                 </Notice>
               ) : null}
               <div className="relative min-h-[620px] overflow-hidden rounded-[20px] bg-surface-2">

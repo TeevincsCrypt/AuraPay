@@ -227,11 +227,13 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await page.screenshot({ path: `${OUT}/mobile-borrow-sheet.png` });
       await page.keyboard.press("Escape");
     });
-    await step("buy sheet: tokenised stock details and funding choice", async () => {
+    await step("buy sheet: two steps (add funds → buy) with USDC balance", async () => {
       await page.goto(APP + "/invest/NVDA", { waitUntil: "networkidle" });
       await page.getByRole("button", { name: "Buy NVDA" }).click();
-      await page.getByText(/You'll receive/).waitFor();
-      await page.getByRole("radio", { name: /USDT · Polygon/ }).waitFor();
+      await page.getByText(/You'll receive/).first().waitFor();
+      await page.getByRole("radio", { name: /1 · Add funds/ }).waitFor();
+      await page.getByRole("radio", { name: /2 · Buy NVDA/ }).waitFor();
+      await page.getByText(/USDC on Base: \$/).waitFor({ timeout: 10_000 });
       await page.screenshot({ path: `${OUT}/mobile-buy-sheet.png` });
     });
   }

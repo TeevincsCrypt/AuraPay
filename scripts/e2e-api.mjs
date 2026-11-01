@@ -400,6 +400,12 @@ await test("orders from unverified wallets are refused", async () => {
   eq(r.status, 403, "status");
 });
 
+await test("USDC balance on Base for the buy flow", async () => {
+  await mock("/_test/evm-balance", { chainId: 8453, token: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", owner: PAYER_POLY, amount: "12500000" });
+  eq((await c.get(`/api/wallet/usdc-balance?address=${PAYER_POLY}&chainId=8453`)).json.balance, 12.5, "balance");
+  eq((await c.get(`/api/wallet/usdc-balance?address=${PAYER_POLY}&chainId=1`)).status, 422, "unsupported chain");
+});
+
 console.log("\nBorrowing — Aave V4 (MAG7 spoke, Base)");
 await test("reads live reserves and the user's position", async () => {
   await mock("/_test/aave-position", { supplied: "100000000", debt: "50000000", collateral: true }); // 1 NVDAc, 50 USDC

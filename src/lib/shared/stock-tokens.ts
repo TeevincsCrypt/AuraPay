@@ -104,3 +104,12 @@ export const ISSUER_LEGAL_URL: Record<StockToken["issuer"], string> = {
   Coinbase: "https://www.coinbase.com/tokenize",
   xStocks: "https://assets.backed.fi/legal-documentation",
 };
+
+/** Native USDC on the chains stock tokens live on (6 decimals). */
+export const USDC_BY_CHAIN: Record<number, string> = {
+  8453: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // Base
+  42161: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", // Arbitrum
+};
+
+/** USDT on Polygon — the USDT in Nimiq Pay. */
+export const USDT_POLYGON = "0xc2132D05D31c914a87C6611C10748aEb04B58e8F";
