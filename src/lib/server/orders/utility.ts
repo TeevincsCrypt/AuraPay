@@ -9,6 +9,7 @@ import { AppError } from "../http";
 import { insertLedger, newRef, updateLedgerBySource } from "../ledger";
 import { errorMessage, log } from "../log";
 import { paymentRails } from "../rails";
+import { verifiedEvmAddresses } from "../auth/challenges";
 import { convertUsd, getRates } from "../rates";
 import { verifyNimiqTransfer, normaliseNimAddress, type VerifyResult } from "../payments/nimiq";
 import { isEvmAddress, verifyPolygonUsdtTransfer } from "../payments/polygon";
@@ -293,8 +294,15 @@ export async function createUtilityOrder(userId: string, input: CreateOrderInput
   const rail = paymentRails()[input.payCurrency];
   if (!rail.available) throw new AppError("PAYMENT_RAIL_UNAVAILABLE", rail.reason ?? "This payment method is unavailable.", 422);
 
-  if (input.payCurrency === "USDT" && (!input.payerAddress || !isEvmAddress(input.payerAddress))) {
-    throw new AppError("PAYER_REQUIRED", "Connect your USDT wallet before paying with USDT.", 422);
+  if (input.payCurrency === "USDT") {
+    if (!input.payerAddress || !isEvmAddress(input.payerAddress)) {
+      throw new AppError("PAYER_REQUIRED", "Connect your USDT wallet before paying with USDT.", 422);
+    }
+    // The paying EVM wallet must have been proven with a signature (personal_sign).
+    const linked = await verifiedEvmAddresses(userId);
+    if (!linked.includes(input.payerAddress.toLowerCase())) {
+      throw new AppError("PAYER_NOT_VERIFIED", "Verify your USDT wallet before paying with it.", 422);
+    }
   }
 
   let priced: Priced;
@@ -308,33 +316,21 @@ export async function createUtilityOrder(userId: string, input: CreateOrderInput
   const fee = roundUpCents(Math.max(config.pricing.minServiceFeeUsd, (priced.providerCostUsd * config.pricing.serviceFeeBps) / 10_000));
   const totalUsd = roundUpCents(priced.providerCostUsd + fee);
 
-  let payAmount: number;
-  let atomic: string;
-  let rate: number;
-  let rateSource: string;
-  if (input.payCurrency === "DEMO") {
-    payAmount = totalUsd;
-    atomic = String(Math.round(totalUsd * 100));
-    rate = 1;
-    rateSource = "simulated";
-  } else {
-    let rates;
-    try {
-      rates = await getRates();
-    } catch {
-      throw new AppError("RATES_UNAVAILABLE", "Exchange rates are unavailable right now, so we can't price this in crypto. Please try again shortly.", 503);
-    }
-    const c = convertUsd(totalUsd, input.payCurrency, rates, { usdtTag: randomInt(1, 100) });
-    payAmount = c.amount;
-    atomic = c.atomic;
-    rate = c.rate;
-    rateSource = rates.source;
+  let rates;
+  try {
+    rates = await getRates();
+  } catch {
+    throw new AppError("RATES_UNAVAILABLE", "Exchange rates are unavailable right now, so we can't price this in crypto. Please try again shortly.", 503);
   }
+  const conv = convertUsd(totalUsd, input.payCurrency, rates, { usdtTag: randomInt(1, 100) });
+  const payAmount = conv.amount;
+  const atomic = conv.atomic;
+  const rate = conv.rate;
+  const rateSource = rates.source;
 
   const ref = newRef();
   const memo = input.payCurrency === "NIM" ? `AuraPay ${ref}` : null;
-  const payTo =
-    input.payCurrency === "NIM" ? normaliseNimAddress(config.nimiq.merchantAddress!) : input.payCurrency === "USDT" ? config.polygon.merchantAddress! : null;
+  const payTo = input.payCurrency === "NIM" ? normaliseNimAddress(config.nimiq.merchantAddress!) : config.polygon.merchantAddress!;
   const environment = config.reloadly.mode;
   const expiresAt = new Date(Date.now() + config.pricing.quoteTtlSeconds * 1000);
   const country = countryByCode(input.countryCode);
@@ -354,7 +350,7 @@ export async function createUtilityOrder(userId: string, input: CreateOrderInput
         priced.recipient, input.recipientLabel?.slice(0, 60) ?? null, priced.productDescription, priced.amountLocal, priced.localCurrency,
         priced.amountSender, priced.senderCurrency, priced.useLocalAmount, priced.providerCostUsd, fee, totalUsd, input.payCurrency,
         payAmount, atomic, rate, rateSource, input.payerAddress?.toLowerCase().startsWith("0x") ? input.payerAddress.toLowerCase() : input.payerAddress ?? null,
-        payTo, memo, input.payCurrency === "DEMO", expiresAt,
+        payTo, memo, false, expiresAt,
       ],
     );
     const row = rows[0];
@@ -366,11 +362,11 @@ export async function createUtilityOrder(userId: string, input: CreateOrderInput
       title: `${SERVICE_LABEL[input.service]} · ${priced.operatorName}`,
       subtitle: `${country?.flag ?? ""} ${priced.recipient}`.trim(),
       amount: payAmount,
-      currency: input.payCurrency === "DEMO" ? "USD" : input.payCurrency,
+      currency: input.payCurrency,
       amountUsd: totalUsd,
       status: "pending",
-      isSimulated: input.payCurrency === "DEMO",
-      environment: input.payCurrency === "DEMO" ? "simulated" : environment,
+      isSimulated: false,
+      environment,
       provider: "reloadly",
       sourceTable: "utility_orders",
       sourceId: row.id,
@@ -426,20 +422,11 @@ export async function submitPayment(userId: string, orderId: string, txHashRaw: 
   }
 
   const currency = order.pay_currency as PayCurrency;
-  let chain: "nimiq" | "polygon" | "demo";
-  let txHash: string;
-
-  if (currency === "DEMO") {
-    if (!paymentRails().DEMO.available) throw new AppError("PAYMENT_RAIL_UNAVAILABLE", "Simulated payments are disabled.", 422);
-    chain = "demo";
-    txHash = `demo-${order.ref}`;
-  } else {
-    if (!txHashRaw) throw new AppError("TX_HASH_REQUIRED", "Missing payment transaction.", 422);
-    chain = currency === "NIM" ? "nimiq" : "polygon";
-    txHash = txHashRaw.trim().toLowerCase();
-    const valid = chain === "nimiq" ? /^[0-9a-f]{64}$/.test(txHash) : /^0x[0-9a-f]{64}$/.test(txHash);
-    if (!valid) throw new AppError("INVALID_TX_HASH", "That doesn't look like a valid transaction hash.", 422);
-  }
+  if (!txHashRaw) throw new AppError("TX_HASH_REQUIRED", "Missing payment transaction.", 422);
+  const chain: "nimiq" | "polygon" = currency === "NIM" ? "nimiq" : "polygon";
+  const txHash = txHashRaw.trim().toLowerCase();
+  const valid = chain === "nimiq" ? /^[0-9a-f]{64}$/.test(txHash) : /^0x[0-9a-f]{64}$/.test(txHash);
+  if (!valid) throw new AppError("INVALID_TX_HASH", "That doesn't look like a valid transaction hash.", 422);
 
   try {
     await db.transaction(async (tx) => {
@@ -451,7 +438,7 @@ export async function submitPayment(userId: string, orderId: string, txHashRaw: 
       const moved = await transition(tx, order, "payment_pending", ["quoted"]);
       if (!moved) throw new AppError("ORDER_STATE_CHANGED", "This order changed state. Refresh and try again.", 409);
       order = moved;
-      await updateLedgerBySource(tx, "utility_orders", order.id, "utility_purchase", { chainTxHash: chain === "demo" ? null : txHash });
+      await updateLedgerBySource(tx, "utility_orders", order.id, "utility_purchase", { chainTxHash: txHash });
     });
   } catch (err) {
     if (err instanceof AppError) throw err;
@@ -468,9 +455,6 @@ export async function submitPayment(userId: string, orderId: string, txHashRaw: 
 
 async function verifyPayment(order: OrderRow, txHash: string): Promise<VerifyResult> {
   const notBefore = new Date(new Date(order.created_at as string).getTime() - 2 * 60_000);
-  if (order.pay_currency === "DEMO") {
-    return { state: "confirmed", from: "demo", to: "demo", atomicValue: String(order.pay_amount_atomic), confirmations: 0, blockNumber: 0, timestamp: Date.now(), raw: { simulated: true } };
-  }
   if (order.pay_currency === "NIM") {
     return verifyNimiqTransfer({
       txHash,
@@ -742,7 +726,6 @@ export async function adminRecordRefund(orderId: string, refundTxHash: string): 
   const order = rows[0];
   if (!order) throw new AppError("ORDER_NOT_FOUND", "Order not found.", 404);
   if (order.status !== "requires_review") throw new AppError("NOT_REFUNDABLE", `Order is ${order.status}; only orders requiring review can be refunded.`, 409);
-  if (order.is_simulated_payment) throw new AppError("SIMULATED", "Simulated payments have nothing to refund. Resolve the order instead.", 409);
   const payer = order.payer_address as string | null;
   if (!payer) throw new AppError("NO_PAYER", "Payer address unknown; cannot verify refund.", 409);
 

@@ -1,60 +1,64 @@
 @import "tailwindcss";
 
 /*
- * AuraPay design tokens.
- * One dark theme, tuned for OLED phones inside Nimiq Pay and for desktop demos.
- * Surfaces step up in lightness; accents are used sparingly for intent.
+ * AuraPay design tokens — light, warm and soft.
+ * Warm off-white canvas with a peach glow, white rounded cards, near-black type and
+ * a single orange accent for primary actions and the active navigation pill.
  */
 @theme {
-  --color-bg: #07070b;
-  --color-surface: #0e0e14;
-  --color-surface-2: #14141c;
-  --color-surface-3: #1b1b25;
-  --color-line: rgb(255 255 255 / 0.06);
-  --color-line-strong: rgb(255 255 255 / 0.11);
+  --color-bg: #f6f4f2;
+  --color-surface: #ffffff;
+  --color-surface-2: #f7f5f3;
+  --color-surface-3: #efecea;
+  --color-line: #eeeae6;
+  --color-line-strong: #e2ddd8;
 
-  --color-fg: #f4f4f7;
-  --color-fg-2: #a3a3b3;
-  --color-fg-3: #6c6c7d;
+  --color-fg: #111111;
+  --color-fg-2: #5f5b57;
+  --color-fg-3: #9b958f;
 
-  --color-accent: #8b7cf6;
-  --color-accent-strong: #a197ff;
-  --color-accent-soft: rgb(139 124 246 / 0.13);
-  --color-mint: #4fd1c5;
-  --color-mint-soft: rgb(79 209 197 / 0.12);
+  --color-accent: #e8622c;
+  --color-accent-strong: #d4521f;
+  --color-accent-soft: #fdeee6;
+  --color-peach: #fbe5d6;
+  --color-mint: #0f9f8f;
+  --color-mint-soft: #e2f5f2;
 
-  --color-up: #34d399;
-  --color-up-soft: rgb(52 211 153 / 0.12);
-  --color-down: #f87171;
-  --color-down-soft: rgb(248 113 113 / 0.12);
-  --color-warn: #fbbf24;
-  --color-warn-soft: rgb(251 191 36 / 0.12);
+  --color-up: #13a05b;
+  --color-up-soft: #e3f6ec;
+  --color-down: #e0352b;
+  --color-down-soft: #fdeceb;
+  --color-warn: #b7791f;
+  --color-warn-soft: #fdf3e1;
 
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 
-  --radius-card: 14px;
-  --radius-control: 10px;
+  --radius-card: 24px;
+  --radius-control: 16px;
 
-  --text-display: 2.25rem;
-  --text-display--line-height: 1.1;
-  --text-display--letter-spacing: -0.03em;
+  --shadow-card: 0 1px 2px rgb(17 17 17 / 0.03), 0 8px 24px rgb(17 17 17 / 0.04);
+  --shadow-float: 0 10px 30px rgb(17 17 17 / 0.12), 0 2px 6px rgb(17 17 17 / 0.06);
+
+  --text-display: 2.5rem;
+  --text-display--line-height: 1.05;
+  --text-display--letter-spacing: -0.035em;
 
   --animate-fade-in: fade-in 180ms ease-out;
-  --animate-sheet-in: sheet-in 240ms cubic-bezier(0.2, 0.9, 0.3, 1);
+  --animate-sheet-in: sheet-in 260ms cubic-bezier(0.2, 0.9, 0.3, 1);
 
   @keyframes fade-in {
     from { opacity: 0; transform: translateY(4px); }
     to { opacity: 1; transform: translateY(0); }
   }
   @keyframes sheet-in {
-    from { opacity: 0; transform: translateY(24px); }
+    from { opacity: 0; transform: translateY(28px); }
     to { opacity: 1; transform: translateY(0); }
   }
 }
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-top: env(safe-area-inset-top, 0px);
 }
@@ -72,17 +76,31 @@ body {
   overscroll-behavior-y: none;
 }
 
-/* Money is always tabular so columns of figures align. */
 .num {
   font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" 1, "ss01" 1;
+  font-feature-settings: "tnum" 1;
 }
 
-/* Subtle top glow behind the app; deliberately low-contrast. */
+/* Soft multi-tone glow behind the top of every screen. */
 .app-glow {
   background:
-    radial-gradient(600px 280px at 15% -5%, rgb(139 124 246 / 0.10), transparent 70%),
-    radial-gradient(520px 240px at 95% 0%, rgb(79 209 197 / 0.05), transparent 70%);
+    radial-gradient(520px 300px at 50% -60px, rgb(251 210 186 / 0.75), transparent 72%),
+    radial-gradient(420px 260px at 0% 0%, rgb(236 214 232 / 0.6), transparent 70%),
+    radial-gradient(420px 260px at 100% 0%, rgb(253 229 205 / 0.7), transparent 70%);
+}
+
+/* Warm hero gradient used behind balances (as in the reference). */
+.hero-surface {
+  background:
+    radial-gradient(120% 90% at 50% 0%, #fde8da 0%, #fbeee6 45%, #fff 100%);
+}
+
+.landing-bg {
+  background:
+    radial-gradient(900px 520px at 10% 0%, #ecd7e8 0%, transparent 60%),
+    radial-gradient(800px 520px at 100% 10%, #fde3cf 0%, transparent 60%),
+    radial-gradient(900px 600px at 50% 110%, #d6ecea 0%, transparent 60%),
+    #f6f2f0;
 }
 
 .scrollbar-none {
@@ -101,9 +119,6 @@ input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {
   -webkit-appearance: none;
   margin: 0;
-}
-input[type="number"] {
-  -moz-appearance: textfield;
 }
 
 @media (prefers-reduced-motion: reduce) {

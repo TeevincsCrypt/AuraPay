@@ -6,7 +6,7 @@ import type { UtilityOrderDTO } from "@/lib/shared/types";
 import { countryByCode } from "@/lib/shared/countries";
 import { fmtCrypto, fmtDate, fmtMoney, fmtRate, fmtUsd, shortHash } from "@/lib/shared/format";
 import { ORDER_STATUS_LABEL, StatusPill, orderToActivity } from "../status-pill";
-import { Badge, Divider, KV, Notice, SimulatedBadge, TestBadge } from "../ui";
+import { Divider, KV, Notice, TestBadge } from "../ui";
 
 const SERVICE = { airtime: "Airtime", data: "Mobile data", electricity: "Electricity" } as const;
 
@@ -48,16 +48,12 @@ export function OrderReceipt({ order }: { order: UtilityOrderDTO }) {
       <div className="flex flex-wrap items-center gap-2">
         <StatusPill status={orderToActivity(order.status)} />
         {sandbox ? <TestBadge /> : null}
-        {order.isSimulatedPayment ? <SimulatedBadge /> : null}
       </div>
 
       {sandbox && order.status === "successful" ? (
         <Notice tone="info">
           Test transaction processed by the provider&apos;s sandbox. No real airtime, data or electricity was delivered.
         </Notice>
-      ) : null}
-      {order.isSimulatedPayment ? (
-        <Notice tone="warn">Payment was simulated for this demo. No NIM or USDT left any wallet.</Notice>
       ) : null}
       {order.status === "requires_review" ? (
         <Notice tone="warn" title="We're looking into this">
@@ -77,7 +73,7 @@ export function OrderReceipt({ order }: { order: UtilityOrderDTO }) {
       </div>
 
       {token ? (
-        <div className="rounded-xl border border-line-strong bg-surface-2 p-4 text-center">
+        <div className="rounded-[20px] bg-peach p-4 text-center">
           <p className="text-xs text-fg-3">Electricity token</p>
           <p className="num mt-1 font-mono text-lg tracking-widest text-fg">{token}</p>
           <div className="mt-2">
@@ -86,7 +82,7 @@ export function OrderReceipt({ order }: { order: UtilityOrderDTO }) {
         </div>
       ) : null}
       {pin && (pin.code || pin.serial) ? (
-        <div className="rounded-xl border border-line bg-surface-2 p-3 text-xs text-fg-2">
+        <div className="rounded-[18px] bg-surface-2 p-3 text-xs text-fg-2">
           {pin.code ? <KV k="PIN" v={String(pin.code)} /> : null}
           {pin.serial ? <KV k="Serial" v={String(pin.serial)} /> : null}
           {pin.info1 ? <p className="mt-1 text-fg-3">{String(pin.info1)}</p> : null}
@@ -100,17 +96,15 @@ export function OrderReceipt({ order }: { order: UtilityOrderDTO }) {
         <KV k="Total" v={fmtUsd(order.quote.totalUsd)} strong />
         <KV
           k="Paid with"
-          v={order.quote.payCurrency === "DEMO" ? <Badge tone="warn">Simulated</Badge> : fmtCrypto(order.quote.payAmount, order.quote.payCurrency)}
+          v={fmtCrypto(order.quote.payAmount, order.quote.payCurrency)}
         />
-        {order.quote.payCurrency !== "DEMO" ? (
-          <KV k="Rate" v={`1 ${order.quote.payCurrency} = $${fmtRate(order.quote.exchangeRate)} (${order.quote.rateSource})`} />
-        ) : null}
+        <KV k="Rate" v={`1 ${order.quote.payCurrency} = $${fmtRate(order.quote.exchangeRate)} (${order.quote.rateSource})`} />
       </div>
 
       <Divider />
       <div>
         <KV k="Reference" v={<CopyValue value={order.ref} />} />
-        {order.paymentTxHash && !order.isSimulatedPayment ? (
+        {order.paymentTxHash ? (
           <KV
             k="Payment tx"
             v={

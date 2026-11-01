@@ -15,7 +15,7 @@ const CreateOrder = z.object({
   recipientLabel: z.string().trim().max(60).optional(),
   amount: z.number().positive().max(1_000_000),
   amountCurrency: z.enum(["local", "sender"]),
-  payCurrency: z.enum(["NIM", "USDT", "DEMO"]),
+  payCurrency: z.enum(["NIM", "USDT"]),
   payerAddress: z.string().trim().max(64).optional(),
   saveBeneficiary: z.boolean().optional(),
 });

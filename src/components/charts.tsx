@@ -6,25 +6,19 @@ import { fmtUsd } from "@/lib/shared/format";
 import { cx } from "./ui";
 
 /**
- * Hand-built SVG charts (no chart library): thin 2px lines, recessive axes,
- * hover crosshair + tooltip on time series, gapped segments with a legend for
- * part-to-whole. Categorical colours are validated (dark surface #0e0e14) and
- * assigned in fixed order per entity, never by rank.
+ * Hand-built SVG charts. Single-series price chart: 2px orange line, soft area,
+ * dashed crosshair with an orange value pill (hover/touch). Part-to-whole uses a
+ * gapped bar plus a labelled legend so identity never relies on colour alone.
+ * Categorical colours: validated light palette (white surface), fixed order per entity.
  */
 
-/** Validated categorical palette (dark), fixed order. */
-export const SERIES = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"] as const;
+export const SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"] as const;
 
-/** Stocks keep the same colour everywhere (entity → slot), folding beyond 8 into neutral. */
 const SYMBOL_SLOT: Record<string, number> = { NVDA: 0, AAPL: 1, MSFT: 2, TSLA: 3, AMZN: 4, GOOGL: 5, META: 6, AMD: 7 };
 export function colorForSymbol(symbol: string): string {
   const slot = SYMBOL_SLOT[symbol];
-  return slot === undefined ? "#6c6c7d" : SERIES[slot];
+  return slot === undefined ? "#9b958f" : SERIES[slot];
 }
-
-// ---------------------------------------------------------------------------
-// Sparkline (glyph inside a list row; the row itself is the interactive target)
-// ---------------------------------------------------------------------------
 
 export function Sparkline({ points, width = 72, height = 28, positive }: { points: number[]; width?: number; height?: number; positive?: boolean | null }) {
   if (points.length < 2) return <div style={{ width, height }} />;
@@ -42,29 +36,24 @@ export function Sparkline({ points, width = 72, height = 28, positive }: { point
   );
 }
 
-/** Day-range bar: where the current price sits between today's low and high. */
 export function RangeBar({ low, high, value }: { low: number | null; high: number | null; value: number | null }) {
   if (low === null || high === null || value === null || high <= low) return <div className="h-1 w-full rounded-full bg-surface-3" />;
   const pct = Math.min(100, Math.max(0, ((value - low) / (high - low)) * 100));
   return (
     <div className="relative h-1 w-full rounded-full bg-surface-3" aria-label={`Day range ${low} to ${high}`}>
-      <div className="absolute top-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-fg ring-2 ring-surface" style={{ left: `${pct}%` }} />
+      <div className="absolute top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent ring-2 ring-white" style={{ left: `${pct}%` }} />
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Price chart: single series, area + 2px line, crosshair + tooltip
-// ---------------------------------------------------------------------------
-
-export function PriceChart({ points, height = 220, intraday }: { points: PricePoint[]; height?: number; intraday?: boolean }) {
+export function PriceChart({ points, height = 230, intraday }: { points: PricePoint[]; height?: number; intraday?: boolean }) {
   const gid = useId();
   const ref = useRef<SVGSVGElement>(null);
   const [hover, setHover] = useState<number | null>(null);
   const W = 640;
   const H = height;
-  const padTop = 12;
-  const padBottom = 22;
+  const padTop = 30;
+  const padBottom = 8;
 
   const geo = useMemo(() => {
     if (points.length < 2) return null;
@@ -75,7 +64,7 @@ export function PriceChart({ points, height = 220, intraday }: { points: PricePo
     const x = (i: number) => (i / (points.length - 1)) * W;
     const y = (v: number) => padTop + (1 - (v - min) / span) * (H - padTop - padBottom);
     const line = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.c).toFixed(1)}`).join(" ");
-    const area = `${line} L${W},${H - padBottom} L0,${H - padBottom} Z`;
+    const area = `${line} L${W},${H} L0,${H} Z`;
     return { x, y, line, area, min, max };
   }, [points, H]);
 
@@ -87,10 +76,11 @@ export function PriceChart({ points, height = 220, intraday }: { points: PricePo
     const rel = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
     setHover(Math.round(rel * (points.length - 1)));
   };
-
-  const hp = hover !== null ? points[hover] : null;
+  const idx = hover ?? points.length - 1;
+  const hp = points[idx];
+  const left = `${(idx / (points.length - 1)) * 100}%`;
   const fmtT = (t: string) =>
-    new Date(t).toLocaleString("en-GB", intraday ? { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } : { day: "numeric", month: "short", year: "2-digit" });
+    new Date(t).toLocaleString("en-GB", intraday ? { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } : { day: "numeric", month: "short" });
 
   return (
     <div className="relative select-none">
@@ -110,48 +100,41 @@ export function PriceChart({ points, height = 220, intraday }: { points: PricePo
       >
         <defs>
           <linearGradient id={gid} x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="var(--color-accent)" stopOpacity="0.22" />
+            <stop offset="0%" stopColor="var(--color-accent)" stopOpacity="0.28" />
             <stop offset="100%" stopColor="var(--color-accent)" stopOpacity="0" />
           </linearGradient>
         </defs>
         {[0.25, 0.5, 0.75].map((f) => (
-          <line key={f} x1={0} x2={W} y1={padTop + f * (H - padTop - padBottom)} y2={padTop + f * (H - padTop - padBottom)} stroke="var(--color-line)" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+          <line key={f} x1={0} x2={W} y1={padTop + f * (H - padTop - padBottom)} y2={padTop + f * (H - padTop - padBottom)} stroke="var(--color-line)" strokeWidth={1} strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
         ))}
         <path d={geo.area} fill={`url(#${gid})`} />
         <path d={geo.line} fill="none" stroke="var(--color-accent)" strokeWidth={2} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
-        {hp && hover !== null ? (
-          <line x1={geo.x(hover)} x2={geo.x(hover)} y1={padTop} y2={H - padBottom} stroke="var(--color-fg-3)" strokeDasharray="3 3" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+        {hover !== null ? (
+          <line x1={geo.x(idx)} x2={geo.x(idx)} y1={14} y2={H} stroke="var(--color-fg-3)" strokeDasharray="3 3" strokeWidth={1} vectorEffect="non-scaling-stroke" />
         ) : null}
       </svg>
-      {hp && hover !== null ? (
-        <>
-          <div
-            className="pointer-events-none absolute size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent ring-2 ring-surface"
-            style={{ left: `${(hover / (points.length - 1)) * 100}%`, top: geo.y(hp.c) }}
-          />
-          <div
-            className="pointer-events-none absolute top-0 -translate-x-1/2 rounded-lg border border-line-strong bg-surface-3 px-2.5 py-1.5 text-xs shadow-lg"
-            style={{ left: `clamp(56px, ${(hover / (points.length - 1)) * 100}%, calc(100% - 56px))` }}
-          >
-            <div className="num font-semibold text-fg">{fmtUsd(hp.c)}</div>
-            <div className="text-fg-3">{fmtT(hp.t)}</div>
-          </div>
-        </>
+      <div className="pointer-events-none absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent ring-[3px] ring-white" style={{ left, top: geo.y(hp.c) }} />
+      <div
+        className="pointer-events-none absolute -translate-x-1/2 -translate-y-[130%] rounded-full bg-accent px-2.5 py-1 text-xs font-semibold text-white shadow-md"
+        style={{ left: `clamp(40px, ${left}, calc(100% - 40px))`, top: geo.y(hp.c) }}
+      >
+        <span className="num">{fmtUsd(hp.c)}</span>
+      </div>
+      {hover !== null ? (
+        <div className="pointer-events-none absolute top-0 -translate-x-1/2 text-[11px] text-fg-3" style={{ left: `clamp(30px, ${left}, calc(100% - 30px))` }}>
+          {fmtT(hp.t)}
+        </div>
       ) : null}
-      <div className="mt-1 flex justify-between text-[11px] text-fg-3">
+      <div className="mt-2 flex justify-between text-[11px] text-fg-3">
         <span>{fmtT(points[0].t)}</span>
         <span className="num">
-          L {fmtUsd(geo.min)} · H {fmtUsd(geo.max)}
+          Low {fmtUsd(geo.min)} · High {fmtUsd(geo.max)}
         </span>
         <span>{fmtT(points[points.length - 1].t)}</span>
       </div>
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Allocation: gapped horizontal stacked bar + legend list (identity never colour-alone)
-// ---------------------------------------------------------------------------
 
 export function AllocationBar({ items }: { items: { key: string; label: string; value: number; color: string }[] }) {
   const [hover, setHover] = useState<string | null>(null);
@@ -173,12 +156,7 @@ export function AllocationBar({ items }: { items: { key: string; label: string; 
       </div>
       <ul className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3">
         {items.map((i) => (
-          <li
-            key={i.key}
-            className={cx("flex items-center gap-2 text-xs transition-opacity", hover && hover !== i.key && "opacity-50")}
-            onMouseEnter={() => setHover(i.key)}
-            onMouseLeave={() => setHover(null)}
-          >
+          <li key={i.key} className={cx("flex items-center gap-2 text-xs transition-opacity", hover && hover !== i.key && "opacity-50")} onMouseEnter={() => setHover(i.key)} onMouseLeave={() => setHover(null)}>
             <span className="size-2 shrink-0 rounded-[2px]" style={{ background: i.color }} aria-hidden />
             <span className="text-fg-2">{i.label}</span>
             <span className="num ml-auto text-fg-3">{((i.value / total) * 100).toFixed(1)}%</span>
@@ -189,29 +167,24 @@ export function AllocationBar({ items }: { items: { key: string; label: string; 
   );
 }
 
-// ---------------------------------------------------------------------------
-// LTV meter: current LTV vs max borrow and liquidation thresholds
-// ---------------------------------------------------------------------------
-
-export function LtvMeter({ ltv, maxLtv, liquidationLtv }: { ltv: number | null; maxLtv: number; liquidationLtv: number }) {
-  const scale = Math.max(liquidationLtv * 1.25, 0.8);
-  const pos = (v: number) => `${Math.min(100, (v / scale) * 100)}%`;
-  const state = ltv === null ? "none" : ltv >= liquidationLtv ? "critical" : ltv > maxLtv ? "warn" : "ok";
+/** Aave health factor: liquidation at 1.0. Status is shown with a label, never colour alone. */
+export function HealthMeter({ healthFactor }: { healthFactor: number | null }) {
+  const hf = healthFactor;
+  const scale = 3;
+  const pct = hf === null ? 100 : Math.min(100, (hf / scale) * 100);
+  const state = hf === null ? "none" : hf < 1.1 ? "critical" : hf < 1.5 ? "warn" : "ok";
   const fill = state === "critical" ? "var(--color-down)" : state === "warn" ? "var(--color-warn)" : "var(--color-up)";
   return (
     <div>
-      <div className="relative h-2 w-full rounded-full bg-surface-3">
-        {ltv !== null ? <div className="h-full rounded-full" style={{ width: pos(ltv), background: fill }} /> : null}
-        <div className="absolute -top-1 h-4 w-px bg-fg-2" style={{ left: pos(maxLtv) }} aria-hidden />
-        <div className="absolute -top-1 h-4 w-px bg-down" style={{ left: pos(liquidationLtv) }} aria-hidden />
+      <div className="relative h-2.5 w-full rounded-full bg-surface-3">
+        {hf !== null ? <div className="h-full rounded-full" style={{ width: `${pct}%`, background: fill }} /> : null}
+        <div className="absolute -top-1 h-[18px] w-0.5 rounded bg-down" style={{ left: `${(1 / scale) * 100}%` }} aria-hidden />
       </div>
-      <div className="relative mt-1.5 h-4 text-[10.5px] text-fg-3">
-        <span className="absolute -translate-x-1/2 whitespace-nowrap" style={{ left: pos(maxLtv) }}>
-          Max {(maxLtv * 100).toFixed(0)}%
+      <div className="relative mt-1.5 h-4 text-[11px] text-fg-3">
+        <span className="absolute -translate-x-1/2 text-down" style={{ left: `${(1 / scale) * 100}%` }}>
+          Liquidation 1.0
         </span>
-        <span className="absolute -translate-x-1/2 whitespace-nowrap text-down" style={{ left: pos(liquidationLtv) }}>
-          Liquidation {(liquidationLtv * 100).toFixed(0)}%
-        </span>
+        <span className="absolute right-0">3.0+</span>
       </div>
     </div>
   );

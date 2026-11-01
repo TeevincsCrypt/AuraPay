@@ -5,12 +5,13 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ChevronRight, Lightbulb, Phone, Smartphone, Wifi, Zap, Star, Trash2 } from "lucide-react";
 import { api, ApiError, newRequestId } from "@/lib/client/api";
 import { useApi, useStatus } from "@/lib/client/hooks";
+import { useSession } from "@/lib/client/session";
 import { useWallet, WalletActionError } from "@/lib/client/wallet";
 import { countryByCode, TARGET_COUNTRIES, type TargetCountry } from "@/lib/shared/countries";
 import { fmtCrypto, fmtMoney, fmtNum, fmtUsd } from "@/lib/shared/format";
 import type { BillerDTO, CountryServices, OperatorDTO, PayCurrency, UtilityOrderDTO, UtilityService } from "@/lib/shared/types";
 import { ORDER_STATUS_LABEL, TERMINAL_ORDER_STATUSES } from "../status-pill";
-import { Badge, Button, Card, cx, EmptyState, ErrorState, Field, Input, KV, Notice, PageHeader, Skeleton, Spinner, TestBadge } from "../ui";
+import { Button, Card, cx, EmptyState, ErrorState, Field, Input, Keypad, KV, Notice, PageHeader, Skeleton, SlideToConfirm, Spinner, TestBadge } from "../ui";
 import { OrderReceipt } from "./receipt";
 
 type Step = "country" | "service" | "details" | "review" | "processing" | "result";
@@ -71,6 +72,26 @@ export function PayFlow() {
   });
   const [prefill, setPrefill] = useState<Beneficiary | null>(null);
   const [order, setOrder] = useState<UtilityOrderDTO | null>(null);
+
+  // Quick Pay deep link from Home: /pay?beneficiary=<id>
+  useEffect(() => {
+    const id = params.get("beneficiary");
+    if (!id) return;
+    let alive = true;
+    api<{ beneficiaries: Beneficiary[] }>("/api/beneficiaries")
+      .then((r) => {
+        const b = r.beneficiaries.find((x) => x.id === id);
+        if (!alive || !b) return;
+        setCountry(b.countryCode);
+        setService(b.kind === "meter" ? "electricity" : "airtime");
+        setPrefill(b);
+        setStep("details");
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [params]);
 
   // Resume a payment that was submitted to the wallet but not yet registered/confirmed.
   useEffect(() => {
@@ -389,9 +410,6 @@ function PayCurrencyPicker({ value, onChange }: { value: PayCurrency | null; onC
       reason: rails?.USDT.reason,
     },
   ];
-  if (rails?.DEMO.available) {
-    options.push({ c: "DEMO", title: "Simulated payment", sub: "Demo only — no funds move", disabled: false });
-  }
   return (
     <div className="space-y-2" role="radiogroup" aria-label="Payment currency">
       {options.map((o) => (
@@ -402,18 +420,17 @@ function PayCurrencyPicker({ value, onChange }: { value: PayCurrency | null; onC
           disabled={o.disabled}
           onClick={() => onChange(o.c)}
           className={cx(
-            "flex w-full items-center gap-3 rounded-xl border p-3.5 text-left transition-colors disabled:cursor-not-allowed",
-            value === o.c ? "border-accent bg-accent-soft" : "border-line bg-surface-2 enabled:hover:border-line-strong",
+            "flex w-full items-center gap-3 rounded-[20px] p-4 text-left ring-1 transition-colors disabled:cursor-not-allowed",
+            value === o.c ? "bg-accent-soft ring-accent" : "bg-surface ring-line enabled:hover:ring-line-strong",
           )}
         >
-          <span className={cx("grid size-9 shrink-0 place-items-center rounded-full text-[11px] font-bold", o.c === "NIM" ? "bg-[#e9b213]/15 text-[#e9b213]" : o.c === "USDT" ? "bg-[#26a17b]/15 text-[#26a17b]" : "bg-warn-soft text-warn")}>
-            {o.c === "DEMO" ? "SIM" : o.c}
+          <span className={cx("grid size-9 shrink-0 place-items-center rounded-full text-[11px] font-bold", o.c === "NIM" ? "bg-[#e9b213]/15 text-[#b8890c]" : "bg-[#26a17b]/15 text-[#1d8463]")}>
+            {o.c}
           </span>
           <span className="min-w-0 flex-1">
             <span className={cx("block text-sm font-medium", o.disabled ? "text-fg-3" : "text-fg")}>{o.title}</span>
             <span className="block text-xs text-fg-3">{o.disabled ? o.reason ?? "Unavailable" : o.sub}</span>
           </span>
-          {o.c === "DEMO" ? <Badge tone="warn">Demo</Badge> : null}
         </button>
       ))}
     </div>
@@ -433,6 +450,7 @@ function DetailsStep({
 }) {
   const info = countryByCode(country)!;
   const w = useWallet();
+  const session = useSession();
   const isPhone = service !== "electricity";
 
   const [recipient, setRecipient] = useState(prefill?.value ? (isPhone ? prefill.value.replace(new RegExp(`^${info.dialCode}`), "") : prefill.value) : "");
@@ -508,7 +526,9 @@ function DetailsStep({
     setSubmitting(true);
     try {
       let payerAddress: string | undefined;
-      if (payCurrency === "USDT") payerAddress = w.evm.address ?? (await w.connectEvm());
+      if (payCurrency === "USDT") {
+        payerAddress = session.user?.evmAddresses[0] ?? (await w.linkEvm().then(async (a) => (await session.refresh(), a)));
+      }
       if (payCurrency === "NIM" && w.nimiq.status !== "connected") await w.connectNimiq();
       const r = await api<{ order: UtilityOrderDTO }>("/api/orders", {
         method: "POST",
@@ -642,11 +662,25 @@ function DetailsStep({
                 : `Between ${fmtNum(biller!.minLocalAmount)} and ${fmtNum(biller!.maxLocalAmount)} ${biller!.localCurrency}${biller!.localFee ? ` · provider fee ${fmtNum(biller!.localFee)} ${biller!.localCurrency}` : ""}`
             }
           >
-            <Input id="amount" inputMode="decimal" placeholder="0" value={amountText} onChange={(e) => setAmountText(e.target.value.replace(/[^0-9.,]/g, ""))} trail={currencyLabel} />
+            <div className="hero-surface rounded-[24px] px-4 py-6 text-center">
+              <input
+                id="amount"
+                inputMode="decimal"
+                placeholder="0"
+                value={amountText}
+                onChange={(e) => setAmountText(e.target.value.replace(/[^0-9.]/g, ""))}
+                className="num w-full bg-transparent text-center text-[38px] font-semibold tracking-[-0.03em] text-fg outline-none placeholder:text-fg-3"
+                aria-label={`Amount in ${currencyLabel}`}
+              />
+              <p className="text-[13px] text-fg-2">{currencyLabel}</p>
+            </div>
+            <div className="mt-3 sm:hidden">
+              <Keypad value={amountText} onChange={setAmountText} maxDecimals={useLocal ? 0 : 2} />
+            </div>
             {presets.length ? (
-              <div className="mt-2 flex gap-2">
+              <div className="mt-3 flex gap-2">
                 {presets.map((p) => (
-                  <button key={p} onClick={() => setAmountText(String(p))} className="h-8 flex-1 rounded-lg border border-line bg-surface-2 text-[13px] text-fg-2 hover:border-line-strong">
+                  <button key={p} onClick={() => setAmountText(String(p))} className="h-9 flex-1 rounded-full bg-surface text-[13px] font-medium text-fg-2 shadow-[var(--shadow-card)]">
                     {useLocal ? fmtNum(p) : `$${p}`}
                   </button>
                 ))}
@@ -746,7 +780,7 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
     }
   }, [q, order, w, onSubmitted, networkMismatch, status]);
 
-  const payLabel = q.payCurrency === "DEMO" ? "Confirm simulated payment" : `Pay ${fmtCrypto(q.payAmount, q.payCurrency)}`;
+  const payLabel = `Pay ${fmtCrypto(q.payAmount, q.payCurrency)}`;
 
   return (
     <div className="space-y-4">
@@ -755,13 +789,12 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
           <div>
             <p className="text-xs text-fg-3">You&apos;re paying</p>
             <p className="num mt-1 text-[30px] font-semibold tracking-[-0.02em] text-fg">
-              {q.payCurrency === "DEMO" ? fmtUsd(q.totalUsd) : fmtCrypto(q.payAmount, q.payCurrency)}
+              {fmtCrypto(q.payAmount, q.payCurrency)}
             </p>
-            {q.payCurrency !== "DEMO" ? <p className="num text-[13px] text-fg-3">≈ {fmtUsd(q.totalUsd)}</p> : null}
+            <p className="num text-[13px] text-fg-3">≈ {fmtUsd(q.totalUsd)}</p>
           </div>
           <div className="flex flex-col items-end gap-1.5">
             {order.environment === "sandbox" ? <TestBadge /> : null}
-            {q.payCurrency === "DEMO" ? <Badge tone="warn">Simulated</Badge> : null}
           </div>
         </div>
 
@@ -773,9 +806,8 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
           <KV k="Provider price" v={fmtUsd(q.providerCostUsd)} />
           <KV k="AuraPay fee" v={fmtUsd(q.serviceFeeUsd)} />
           <KV k="Total" v={fmtUsd(q.totalUsd)} strong />
-          {q.payCurrency !== "DEMO" ? (
             <KV k="Exchange rate" v={`1 ${q.payCurrency} = $${q.exchangeRate < 0.01 ? q.exchangeRate.toFixed(6) : q.exchangeRate.toFixed(4)}`} />
-          ) : null}
+          
         </div>
       </Card>
 
@@ -812,9 +844,7 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
         </Button>
       ) : (
         <>
-          <Button size="lg" loading={busy} disabled={Boolean(error?.unknown)} onClick={confirm}>
-            {payLabel}
-          </Button>
+          <SlideToConfirm label={busy ? "Waiting for your wallet…" : `Slide to ${payLabel.toLowerCase()}`} loading={busy} disabled={Boolean(error?.unknown) || Boolean(networkMismatch)} onConfirm={() => void confirm()} />
           <p className="num text-center text-xs text-fg-3">
             Price held for {mm}:{String(ss).padStart(2, "0")} · Ref {order.ref}
           </p>
@@ -863,7 +893,7 @@ function ProcessingStep({ order: initial, onDone }: { order: UtilityOrderDTO; on
   }, [initial]);
 
   const steps: { key: string; label: string; done: boolean; active: boolean }[] = [
-    { key: "pay", label: order.isSimulatedPayment ? "Payment simulated" : "Payment confirmed on-chain", done: !["quoted", "payment_pending"].includes(order.status), active: order.status === "payment_pending" },
+    { key: "pay", label: "Payment confirmed on-chain", done: !["quoted", "payment_pending"].includes(order.status), active: order.status === "payment_pending" },
     { key: "send", label: "Sent to provider", done: ["provider_pending", "successful"].includes(order.status), active: ["paid", "fulfilling"].includes(order.status) },
     { key: "deliver", label: order.service === "electricity" ? "Provider confirmation" : "Delivered", done: order.status === "successful", active: order.status === "provider_pending" },
   ];

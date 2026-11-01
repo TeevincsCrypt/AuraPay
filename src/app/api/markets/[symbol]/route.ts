@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { AppError, enforceRateLimit, handler, json, parseQuery } from "@/lib/server/http";
-import { getHistory, getMarketStatus, getQuote, marketDataMode } from "@/lib/server/market";
+import { getHistory, getMarketStatus, getQuote, marketDataSource } from "@/lib/server/market";
 
 export const dynamic = "force-dynamic";
 
@@ -14,5 +14,5 @@ export const GET = handler(async (req, ctx: { params: Promise<{ symbol: string }
   const quote = await getQuote(symbol);
   if (!quote) throw new AppError("UNKNOWN_SYMBOL", "Unsupported stock.", 404);
   const [history, market] = await Promise.all([getHistory(symbol, range), getMarketStatus()]);
-  return json({ mode: marketDataMode(), quote, history, market, range });
+  return json({ source: marketDataSource(), quote, history, market, range });
 });

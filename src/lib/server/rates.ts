@@ -1,5 +1,6 @@
 import "server-only";
 import { config } from "./config";
+import { coingecko } from "./coingecko";
 import { getDb } from "./db";
 import { log, errorMessage } from "./log";
 
@@ -24,16 +25,10 @@ const TTL_MS = 60_000;
 const g = globalThis as unknown as { __apRates?: { value?: Rates; error?: string; at: number } };
 
 async function fetchRates(): Promise<Rates> {
-  const { coingeckoApiKey, coingeckoPro } = config.rates;
-  const testOverride = config.isProduction ? undefined : process.env.COINGECKO_URL_OVERRIDE;
-  const host = testOverride || (coingeckoPro ? "https://pro-api.coingecko.com" : "https://api.coingecko.com");
-  const url = `${host}/api/v3/simple/price?ids=${COINGECKO_IDS.NIM},${COINGECKO_IDS.USDT}&vs_currencies=usd`;
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (coingeckoApiKey) headers[coingeckoPro ? "x-cg-pro-api-key" : "x-cg-demo-api-key"] = coingeckoApiKey;
-
-  const res = await fetch(url, { headers, signal: AbortSignal.timeout(8_000), cache: "no-store" });
-  if (!res.ok) throw new Error(`CoinGecko HTTP ${res.status}`);
-  const body = (await res.json()) as Record<string, { usd?: number }>;
+  const body = await coingecko<Record<string, { usd?: number }>>(
+    `/simple/price?ids=${COINGECKO_IDS.NIM},${COINGECKO_IDS.USDT}&vs_currencies=usd`,
+    TTL_MS,
+  );
   const nimUsd = body[COINGECKO_IDS.NIM]?.usd;
   const usdtUsd = body[COINGECKO_IDS.USDT]?.usd;
   if (!nimUsd || nimUsd <= 0) throw new Error("CoinGecko returned no NIM price");

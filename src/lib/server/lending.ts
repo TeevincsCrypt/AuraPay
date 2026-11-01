@@ -1,268 +1,284 @@
 import "server-only";
-import type { LoanDTO } from "@/lib/shared/types";
-import { config } from "./config";
-import { getDb, iso, num, type Db } from "./db";
+import { erc20Abi, formatUnits, type Abi } from "viem";
+import type { BorrowOverviewDTO, LendingReserveDTO } from "@/lib/shared/types";
+import {
+  AAVE_CHAIN_ID,
+  AAVE_MAG7_ORACLE,
+  AAVE_MAG7_SPOKE,
+  HUB_ABI,
+  ORACLE_ABI,
+  RAY,
+  SPOKE_ABI,
+  VALUE_PER_USD,
+  WAD,
+  tickerForReserveSymbol,
+} from "@/lib/shared/aave";
+import { verifiedEvmAddresses } from "./auth/challenges";
+import { getDb } from "./db";
+import { checkTransaction, readContracts } from "./evm";
 import { AppError } from "./http";
-import { insertLedger, newRef } from "./ledger";
-import { getQuotes } from "./market";
+import { insertLedger, newRef, updateLedgerBySource } from "./ledger";
+import { errorMessage, log } from "./log";
 
 /**
- * Asset-backed lending.
- *
- * No real lending protocol/provider is integrated (that requires custody or
- * on-chain locking of verifiable collateral, real USDT liquidity, liquidation
- * and repayment rails). Therefore:
- *   - `lendingStatus()` reports the truth.
- *   - The simulator only accepts SIMULATED positions as collateral and never
- *     moves real funds. Every record is is_simulated = true.
+ * Real borrowing through Aave V4 (MAG7 spoke on Base). AuraPay never holds funds:
+ * the user's own wallet supplies collateral, borrows and repays directly against
+ * the Aave contracts. The server reads live protocol state and verifies the
+ * transactions the app submitted before recording them in the activity ledger.
  */
 
-/** Share of an asset's market value that can be borrowed against (advance rate). */
-export const ADVANCE_RATES: Record<string, number> = {
-  AAPL: 0.4, MSFT: 0.4, GOOGL: 0.4, AMZN: 0.4, META: 0.4,
-  NVDA: 0.35, AMD: 0.35, NFLX: 0.35,
-  TSLA: 0.3,
-  COIN: 0.25,
-};
+const spokeAbi = SPOKE_ABI as unknown as Abi;
 
-export const TERMS_DAYS = [30, 90, 180] as const;
-
-export function lendingStatus(): { state: "connected" | "simulator" | "unavailable"; provider?: string; reason: string } {
-  if (config.lending.provider) {
-    return { state: "unavailable", provider: config.lending.provider, reason: `Lending provider "${config.lending.provider}" adapter is not implemented yet.` };
-  }
-  if (config.simulatorsAllowed) {
-    return { state: "simulator", reason: "No lending provider is connected. Borrowing runs in a simulator with demo collateral; no real USDT is lent." };
-  }
-  return { state: "unavailable", reason: "No lending provider is connected." };
-}
-
-function accrued(principal: number, apr: number, openedAt: Date, until = new Date()): number {
-  const days = Math.max(0, (until.getTime() - openedAt.getTime()) / 86400_000);
-  return principal * apr * (days / 365);
-}
-
-async function lockedQuantities(db: Db, userId: string): Promise<Map<string, number>> {
-  const rows = await db.query(
-    `select c.symbol, sum(c.quantity) as qty from loan_collateral c join loans l on l.id = c.loan_id
-     where l.user_id = $1 and l.status = 'active' group by c.symbol`,
-    [userId],
-  );
-  return new Map(rows.map((r) => [String(r.symbol), num(r.qty)]));
-}
-
-export interface CollateralOption {
+interface ReserveMeta {
+  reserveId: number;
+  underlying: string;
+  hub: string;
+  assetId: number;
+  decimals: number;
+  dynamicConfigKey: number;
   symbol: string;
-  name: string;
-  quantity: number;
-  lockedQuantity: number;
-  availableQuantity: number;
-  price: number | null;
-  availableValue: number | null;
-  advanceRate: number;
-  borrowCapacity: number | null;
-  isSimulated: boolean;
+  collateralFactor: number;
+  paused: boolean;
+  frozen: boolean;
+  borrowable: boolean;
+  priceUsd: number | null;
+  borrowApr: number | null;
 }
 
-export async function getBorrowOverview(userId: string) {
-  const db = await getDb();
-  const quotes = new Map((await getQuotes()).map((q) => [q.symbol, q]));
-  const locked = await lockedQuantities(db, userId);
-  // Only simulated positions are usable here: they exist only inside the simulator.
-  const positions = await db.query(
-    "select symbol, quantity from stock_positions where user_id = $1 and is_simulated = true and quantity > 0",
-    [userId],
+const g = globalThis as unknown as { __aaveMeta?: { at: number; value: ReserveMeta[] } };
+
+export async function loadReserves(): Promise<ReserveMeta[]> {
+  if (g.__aaveMeta && Date.now() - g.__aaveMeta.at < 60_000) return g.__aaveMeta.value;
+  const [countRaw] = await readContracts(AAVE_CHAIN_ID, [{ to: AAVE_MAG7_SPOKE, abi: spokeAbi, functionName: "getReserveCount" }]);
+  const count = Number(countRaw ?? 0n);
+  if (!count) throw new Error("Aave V4 spoke returned no reserves");
+  const ids = Array.from({ length: Math.min(count, 32) }, (_, i) => i);
+
+  const base = await readContracts(
+    AAVE_CHAIN_ID,
+    ids.flatMap((id) => [
+      { to: AAVE_MAG7_SPOKE, abi: spokeAbi, functionName: "getReserve", args: [BigInt(id)] },
+      { to: AAVE_MAG7_SPOKE, abi: spokeAbi, functionName: "getReserveConfig", args: [BigInt(id)] },
+    ]),
   );
-  const collateral: CollateralOption[] = positions.map((p) => {
-    const symbol = String(p.symbol);
-    const q = quotes.get(symbol);
-    const quantity = num(p.quantity);
-    const lockedQ = Math.min(quantity, locked.get(symbol) ?? 0);
-    const available = Math.max(0, quantity - lockedQ);
-    const price = q?.price ?? null;
-    const rate = ADVANCE_RATES[symbol] ?? 0.25;
+  type Reserve = { underlying: string; hub: string; assetId: number; decimals: number; dynamicConfigKey: number };
+  type Cfg = { paused: boolean; frozen: boolean; borrowable: boolean };
+  const reserves = ids.map((id) => ({ id, r: base[id * 2] as Reserve | null, c: base[id * 2 + 1] as Cfg | null })).filter((x) => x.r && x.c);
+
+  const [extra, prices] = await Promise.all([
+    readContracts(
+      AAVE_CHAIN_ID,
+      reserves.flatMap(({ id, r }) => [
+        { to: AAVE_MAG7_SPOKE, abi: spokeAbi, functionName: "getDynamicReserveConfig", args: [BigInt(id), r!.dynamicConfigKey] },
+        { to: r!.underlying, abi: erc20Abi as unknown as Abi, functionName: "symbol" },
+        { to: r!.hub, abi: HUB_ABI as unknown as Abi, functionName: "getAssetDrawnRate", args: [BigInt(r!.assetId)] },
+      ]),
+    ),
+    readContracts(AAVE_CHAIN_ID, [
+      { to: AAVE_MAG7_ORACLE, abi: ORACLE_ABI as unknown as Abi, functionName: "getReservesPrices", args: [reserves.map((x) => BigInt(x.id))] },
+    ]).catch(() => [null]),
+  ]);
+  const priceList = (prices[0] as bigint[] | null) ?? null;
+
+  const value: ReserveMeta[] = reserves.map(({ id, r, c }, i) => {
+    const dyn = extra[i * 3] as { collateralFactor: number } | null;
+    const symbol = (extra[i * 3 + 1] as string | null) ?? "?";
+    const rate = extra[i * 3 + 2] as bigint | null;
+    const price = priceList?.[i];
     return {
+      reserveId: id,
+      underlying: r!.underlying,
+      hub: r!.hub,
+      assetId: Number(r!.assetId),
+      decimals: Number(r!.decimals),
+      dynamicConfigKey: Number(r!.dynamicConfigKey),
       symbol,
-      name: q?.name ?? symbol,
-      quantity,
-      lockedQuantity: lockedQ,
-      availableQuantity: available,
-      price,
-      availableValue: price !== null ? available * price : null,
-      advanceRate: Math.min(rate, config.lending.maxLtv),
-      borrowCapacity: price !== null ? available * price * Math.min(rate, config.lending.maxLtv) : null,
-      isSimulated: true,
+      collateralFactor: dyn ? Number(dyn.collateralFactor) / 10_000 : 0,
+      paused: c!.paused,
+      frozen: c!.frozen,
+      borrowable: c!.borrowable,
+      priceUsd: price ? Number(price) / 1e8 : null,
+      borrowApr: c!.borrowable && rate !== null ? Number((rate * 1_000_000n) / RAY) / 1_000_000 : null,
+    };
+  });
+  g.__aaveMeta = { at: Date.now(), value };
+  return value;
+}
+
+export async function getBorrowOverview(userId: string): Promise<BorrowOverviewDTO> {
+  const owners = await verifiedEvmAddresses(userId);
+  const owner = owners[0] ?? null;
+  let meta: ReserveMeta[];
+  try {
+    meta = await loadReserves();
+  } catch (err) {
+    log.warn("aave.reserves_failed", { error: errorMessage(err) });
+    return {
+      available: false,
+      reason: "Couldn't reach Aave on Base right now. Please try again shortly.",
+      chainId: AAVE_CHAIN_ID,
+      spoke: AAVE_MAG7_SPOKE,
+      owner,
+      reserves: [],
+      account: null,
+    };
+  }
+
+  let account: BorrowOverviewDTO["account"] = null;
+  const perReserve = new Map<number, { wallet: number; supplied: number; debt: number; collateral: boolean }>();
+  if (owner) {
+    const calls = meta.flatMap((m) => [
+      { to: m.underlying, abi: erc20Abi as unknown as Abi, functionName: "balanceOf", args: [owner] },
+      { to: AAVE_MAG7_SPOKE, abi: spokeAbi, functionName: "getUserSuppliedAssets", args: [BigInt(m.reserveId), owner] },
+      { to: AAVE_MAG7_SPOKE, abi: spokeAbi, functionName: "getUserTotalDebt", args: [BigInt(m.reserveId), owner] },
+      { to: AAVE_MAG7_SPOKE, abi: spokeAbi, functionName: "getUserReserveStatus", args: [BigInt(m.reserveId), owner] },
+    ]);
+    const [res, acct] = await Promise.all([
+      readContracts(AAVE_CHAIN_ID, calls),
+      readContracts(AAVE_CHAIN_ID, [{ to: AAVE_MAG7_SPOKE, abi: spokeAbi, functionName: "getUserAccountData", args: [owner] }]),
+    ]);
+    meta.forEach((m, i) => {
+      const n = (v: unknown) => (typeof v === "bigint" ? Number(formatUnits(v, m.decimals)) : 0);
+      const status = res[i * 4 + 3] as [boolean, boolean] | null;
+      perReserve.set(m.reserveId, { wallet: n(res[i * 4]), supplied: n(res[i * 4 + 1]), debt: n(res[i * 4 + 2]), collateral: Boolean(status?.[0]) });
+    });
+    const a = acct[0] as {
+      riskPremium: bigint;
+      avgCollateralFactor: bigint;
+      healthFactor: bigint;
+      totalCollateralValue: bigint;
+      totalDebtValueRay: bigint;
+    } | null;
+    if (a) {
+      const collateralUsd = Number((a.totalCollateralValue * 100n) / VALUE_PER_USD) / 100;
+      const debtUsd = Number((a.totalDebtValueRay * 100n) / (VALUE_PER_USD * RAY)) / 100;
+      const avgCf = Number((a.avgCollateralFactor * 10_000n) / WAD) / 10_000;
+      const hf = a.healthFactor > 10n ** 30n ? null : Number((a.healthFactor * 1000n) / WAD) / 1000;
+      account = {
+        healthFactor: debtUsd > 0 ? hf : null,
+        collateralUsd,
+        debtUsd,
+        avgCollateralFactor: collateralUsd > 0 ? avgCf : null,
+        riskPremiumBps: Number(a.riskPremium),
+        borrowCapacityUsd: Math.max(0, collateralUsd * avgCf - debtUsd),
+      };
+    }
+  }
+
+  const reserves: LendingReserveDTO[] = meta.map((m) => {
+    const u = perReserve.get(m.reserveId);
+    return {
+      reserveId: m.reserveId,
+      symbol: m.symbol,
+      ticker: tickerForReserveSymbol(m.symbol),
+      underlying: m.underlying,
+      decimals: m.decimals,
+      priceUsd: m.priceUsd,
+      collateralFactor: m.collateralFactor,
+      borrowable: m.borrowable,
+      paused: m.paused,
+      frozen: m.frozen,
+      borrowApr: m.borrowApr,
+      walletBalance: u?.wallet ?? 0,
+      supplied: u?.supplied ?? 0,
+      usingAsCollateral: u?.collateral ?? false,
+      debt: u?.debt ?? 0,
     };
   });
 
-  const loans = await listLoans(userId);
-  const active = loans.filter((l) => l.status === "active");
-  const totalCollateral = collateral.reduce((s, c) => s + (c.price !== null ? c.quantity * c.price : 0), 0);
-  const outstanding = active.reduce((s, l) => s + l.outstanding, 0);
-  const capacity = collateral.reduce((s, c) => s + (c.borrowCapacity ?? 0), 0);
-  const lockedValue = active.reduce((s, l) => s + (l.collateralValue ?? 0), 0);
-
   return {
-    status: lendingStatus(),
-    params: { maxLtv: config.lending.maxLtv, liquidationLtv: config.lending.liquidationLtv, apr: config.lending.simulatorApr, terms: TERMS_DAYS },
-    collateral,
-    loans,
-    totals: {
-      eligibleCollateralUsd: totalCollateral,
-      lockedCollateralUsd: lockedValue,
-      outstandingUsdt: outstanding,
-      availableToBorrowUsdt: capacity,
-      currentLtv: lockedValue > 0 ? outstanding / lockedValue : null,
-      health: lockedValue > 0 && outstanding > 0 ? config.lending.liquidationLtv / (outstanding / lockedValue) : null,
-    },
+    available: true,
+    reason: owner ? null : "Verify your EVM wallet to borrow against your stock tokens.",
+    chainId: AAVE_CHAIN_ID,
+    spoke: AAVE_MAG7_SPOKE,
+    owner,
+    reserves,
+    account,
   };
 }
 
-export async function listLoans(userId: string): Promise<LoanDTO[]> {
-  const db = await getDb();
-  const quotes = new Map((await getQuotes()).map((q) => [q.symbol, q]));
-  const loans = await db.query("select * from loans where user_id = $1 order by opened_at desc limit 50", [userId]);
-  const out: LoanDTO[] = [];
-  for (const l of loans) {
-    const col = await db.query("select symbol, quantity, value_at_lock from loan_collateral where loan_id = $1", [l.id]);
-    const collateral = col.map((c) => {
-      const price = quotes.get(String(c.symbol))?.price ?? null;
-      return { symbol: String(c.symbol), quantity: num(c.quantity), valueAtLock: num(c.value_at_lock), currentValue: price !== null ? num(c.quantity) * price : null };
-    });
-    const collateralValue = collateral.every((c) => c.currentValue !== null) ? collateral.reduce((s, c) => s + (c.currentValue ?? 0), 0) : null;
-    const principal = num(l.principal_usdt);
-    const apr = num(l.apr);
-    const openedAt = new Date(l.opened_at as string);
-    const closedAt = l.closed_at ? new Date(l.closed_at as string) : undefined;
-    const interest = accrued(principal, apr, openedAt, closedAt);
-    const repaid = num(l.repaid_usdt);
-    const totalOwed = principal + interest;
-    const outstanding = l.status === "active" ? Math.max(0, totalOwed - repaid) : 0;
-    const currentLtv = collateralValue && collateralValue > 0 ? outstanding / collateralValue : null;
-    out.push({
-      id: String(l.id),
-      ref: String(l.ref),
-      isSimulated: Boolean(l.is_simulated),
-      principalUsdt: principal,
-      apr,
-      termDays: num(l.term_days),
-      maxLtv: num(l.max_ltv),
-      liquidationLtv: num(l.liquidation_ltv),
-      accruedInterest: interest,
-      totalOwed,
-      repaidUsdt: repaid,
-      outstanding,
-      collateral,
-      collateralValue,
-      currentLtv,
-      health: currentLtv && currentLtv > 0 ? num(l.liquidation_ltv) / currentLtv : null,
-      status: l.status as LoanDTO["status"],
-      openedAt: iso(l.opened_at)!,
-      dueAt: iso(l.due_at)!,
-      closedAt: iso(l.closed_at),
-    });
-  }
-  return out;
-}
+// ---------------------------------------------------------------------------
+// Recording & verifying user-submitted Aave transactions
+// ---------------------------------------------------------------------------
 
-export async function openSimulatedLoan(
+export type LendingAction = "approve" | "supply" | "withdraw" | "borrow" | "repay" | "set_collateral";
+
+const LEDGER: Partial<Record<LendingAction, { category: "loan_disbursement" | "loan_repayment" | "collateral_deposit" | "collateral_withdrawal"; title: string }>> = {
+  borrow: { category: "loan_disbursement", title: "Borrowed on Aave" },
+  repay: { category: "loan_repayment", title: "Loan repayment" },
+  supply: { category: "collateral_deposit", title: "Collateral added" },
+  withdraw: { category: "collateral_withdrawal", title: "Collateral withdrawn" },
+};
+
+export async function recordLendingAction(
   userId: string,
-  input: { amountUsdt: number; termDays: number; collateral: { symbol: string; quantity: number }[] },
+  input: { action: LendingAction; reserveId: number | null; owner: string; txHash: string; amountAtomic: string | null },
 ) {
-  if (lendingStatus().state !== "simulator") throw new AppError("LENDING_UNAVAILABLE", lendingStatus().reason, 503);
-  if (!TERMS_DAYS.includes(input.termDays as (typeof TERMS_DAYS)[number])) throw new AppError("INVALID_TERM", "Choose a supported loan term.", 422);
-  if (!(input.amountUsdt >= 10)) throw new AppError("AMOUNT_TOO_LOW", "Minimum loan is 10 USDT.", 422);
-
-  const overview = await getBorrowOverview(userId);
-  const bySymbol = new Map(overview.collateral.map((c) => [c.symbol, c]));
-  let collateralValue = 0;
-  let capacity = 0;
-  const lines: { symbol: string; quantity: number; value: number }[] = [];
-  for (const sel of input.collateral) {
-    const opt = bySymbol.get(sel.symbol);
-    if (!opt) throw new AppError("INELIGIBLE_COLLATERAL", `${sel.symbol} is not available as collateral.`, 422);
-    if (!(sel.quantity > 0) || sel.quantity > opt.availableQuantity + 1e-9) throw new AppError("INSUFFICIENT_COLLATERAL", `Not enough ${sel.symbol} available.`, 422);
-    if (opt.price === null) throw new AppError("PRICE_UNAVAILABLE", `No price for ${sel.symbol}; can't value collateral.`, 503);
-    const value = sel.quantity * opt.price;
-    collateralValue += value;
-    capacity += value * opt.advanceRate;
-    lines.push({ symbol: sel.symbol, quantity: sel.quantity, value });
-  }
-  if (lines.length === 0) throw new AppError("NO_COLLATERAL", "Select at least one asset as collateral.", 422);
-  if (input.amountUsdt > capacity + 1e-6) {
-    throw new AppError("EXCEEDS_CAPACITY", `You can borrow up to ${capacity.toFixed(2)} USDT against this collateral.`, 422);
-  }
+  const owners = await verifiedEvmAddresses(userId);
+  if (!owners.includes(input.owner.toLowerCase())) throw new AppError("WALLET_NOT_VERIFIED", "This wallet isn't verified for your account.", 403);
+  const meta = await loadReserves();
+  const reserve = input.reserveId !== null ? meta.find((m) => m.reserveId === input.reserveId) : undefined;
+  if (input.reserveId !== null && !reserve) throw new AppError("RESERVE_NOT_FOUND", "Unknown Aave reserve.", 422);
 
   const db = await getDb();
-  const ref = newRef("LN");
-  const apr = config.lending.simulatorApr;
-  return db.transaction(async (tx) => {
-    const rows = await tx.query<{ id: string }>(
-      `insert into loans (ref, user_id, is_simulated, provider, principal_usdt, apr, term_days, max_ltv, liquidation_ltv,
-         collateral_value_at_open, status, due_at)
-       values ($1,$2,true,'simulator',$3,$4,$5,$6,$7,$8,'active', now() + make_interval(days => $5::int)) returning id`,
-      [ref, userId, input.amountUsdt, apr, input.termDays, config.lending.maxLtv, config.lending.liquidationLtv, collateralValue],
+  const ref = newRef("AV");
+  const amount = reserve && input.amountAtomic ? Number(formatUnits(BigInt(input.amountAtomic), reserve.decimals)) : null;
+  try {
+    const rows = await db.query<{ id: string }>(
+      `insert into lending_actions (ref, user_id, chain_id, spoke, action, reserve_id, symbol, amount_atomic, decimals, owner, tx_hash, status)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'submitted') returning id`,
+      [ref, userId, AAVE_CHAIN_ID, AAVE_MAG7_SPOKE, input.action, input.reserveId, reserve?.symbol ?? null, input.amountAtomic, reserve?.decimals ?? null, input.owner.toLowerCase(), input.txHash.toLowerCase()],
     );
-    for (const l of lines) {
-      await tx.query("insert into loan_collateral (loan_id, symbol, quantity, value_at_lock, is_simulated) values ($1,$2,$3,$4,true)", [rows[0].id, l.symbol, l.quantity, l.value]);
+    const l = LEDGER[input.action];
+    if (l && reserve && amount !== null) {
+      await insertLedger(db, {
+        ref,
+        userId,
+        category: l.category,
+        title: `${l.title} · ${reserve.symbol}`,
+        subtitle: "Aave V4 · Base",
+        amount,
+        currency: reserve.symbol,
+        amountUsd: reserve.priceUsd !== null ? amount * reserve.priceUsd : null,
+        status: "pending",
+        isSimulated: false,
+        environment: "production",
+        provider: "aave-v4",
+        chainTxHash: input.txHash.toLowerCase(),
+        sourceTable: "lending_actions",
+        sourceId: rows[0].id,
+        details: { action: input.action, reserveId: input.reserveId, chainId: AAVE_CHAIN_ID },
+      });
     }
-    await insertLedger(tx, {
-      ref,
-      userId,
-      category: "loan_disbursement",
-      title: "Loan disbursed",
-      subtitle: `${input.termDays}-day loan · simulated`,
-      amount: input.amountUsdt,
-      currency: "USDT",
-      amountUsd: input.amountUsdt,
-      status: "successful",
-      isSimulated: true,
-      environment: "simulated",
-      provider: "simulator",
-      sourceTable: "loans",
-      sourceId: rows[0].id,
-      details: { collateral: lines, apr, note: "Simulated loan. No USDT was sent to your wallet." },
-    });
-    return { ref };
-  });
+  } catch (err) {
+    if (/unique|duplicate/i.test(errorMessage(err))) throw new AppError("TX_ALREADY_RECORDED", "This transaction was already recorded.", 409);
+    throw err;
+  }
+  return refreshLendingAction(userId, input.txHash.toLowerCase());
 }
 
-export async function repaySimulatedLoan(userId: string, loanId: string, amountUsdt: number) {
-  if (lendingStatus().state !== "simulator") throw new AppError("LENDING_UNAVAILABLE", lendingStatus().reason, 503);
-  const loan = (await listLoans(userId)).find((l) => l.id === loanId);
-  if (!loan) throw new AppError("LOAN_NOT_FOUND", "Loan not found.", 404);
-  if (loan.status !== "active") throw new AppError("LOAN_CLOSED", "This loan is already closed.", 409);
-  if (!(amountUsdt > 0)) throw new AppError("INVALID_AMOUNT", "Enter a repayment amount.", 422);
-  const pay = Math.min(amountUsdt, Math.ceil(loan.outstanding * 1e6) / 1e6);
-  const closes = pay >= loan.outstanding - 1e-6;
+export async function refreshLendingAction(userId: string, txHash: string) {
   const db = await getDb();
-  const ref = newRef("RP");
+  const rows = await db.query<{ id: string; action: LendingAction; owner: string; status: string; reserve_id: number | null }>(
+    "select * from lending_actions where tx_hash = $1 and user_id = $2",
+    [txHash.toLowerCase(), userId],
+  );
+  const a = rows[0];
+  if (!a) throw new AppError("NOT_FOUND", "Not found.", 404);
+  if (a.status !== "submitted") return { status: a.status };
+  let expectTo: string | undefined = AAVE_MAG7_SPOKE;
+  if (a.action === "approve") {
+    const meta = await loadReserves();
+    expectTo = meta.find((m) => m.reserveId === a.reserve_id)?.underlying;
+  }
+  const check = await checkTransaction(AAVE_CHAIN_ID, txHash, { from: a.owner, to: expectTo });
+  if (check.state === "pending") return { status: "submitted" };
+  const status = check.state === "confirmed" ? "confirmed" : "failed";
   await db.transaction(async (tx) => {
-    const upd = await tx.query(
-      `update loans set repaid_usdt = repaid_usdt + $3, updated_at = now(),
-         status = case when $4 then 'repaid' else status end,
-         closed_at = case when $4 then now() else closed_at end
-       where id = $1 and user_id = $2 and status = 'active' returning id`,
-      [loanId, userId, pay, closes],
-    );
-    if (!upd[0]) throw new AppError("LOAN_STATE_CHANGED", "Loan changed state. Refresh and try again.", 409);
-    await insertLedger(tx, {
-      ref,
-      userId,
-      category: "loan_repayment",
-      title: closes ? "Loan repaid in full" : "Loan repayment",
-      subtitle: `${loan.ref} · simulated`,
-      amount: pay,
-      currency: "USDT",
-      amountUsd: pay,
-      status: "successful",
-      isSimulated: true,
-      environment: "simulated",
-      provider: "simulator",
-      sourceTable: "loans",
-      sourceId: loanId,
-      details: { loanRef: loan.ref, closesLoan: closes, note: "Simulated repayment. No USDT was transferred." },
-    });
+    await tx.query("update lending_actions set status = $2, confirmed_at = now(), failure_reason = $3 where id = $1 and status = 'submitted'", [a.id, status, check.reason ?? null]);
+    const l = LEDGER[a.action];
+    if (l) await updateLedgerBySource(tx, "lending_actions", a.id, l.category, { status: status === "confirmed" ? "successful" : "failed" });
   });
-  return { ref, closed: closes };
+  g.__aaveMeta = undefined; // positions changed
+  return { status };
 }

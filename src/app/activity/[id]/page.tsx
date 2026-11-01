@@ -6,23 +6,18 @@ import { ArrowLeft } from "lucide-react";
 import { amountText, CATEGORY_LABEL } from "@/components/activity-row";
 import { OrderReceipt } from "@/components/pay/receipt";
 import { StatusPill } from "@/components/status-pill";
-import { Card, Divider, ErrorState, KV, Notice, SimulatedBadge, Skeleton, TestBadge } from "@/components/ui";
+import { Card, Divider, ErrorState, KV, Notice, Skeleton, TestBadge } from "@/components/ui";
 import { useApi } from "@/lib/client/hooks";
 import { fmtDate, fmtUsd, shortHash } from "@/lib/shared/format";
 import type { ActivityItem, UtilityOrderDTO } from "@/lib/shared/types";
 
 const DETAIL_LABELS: Record<string, string> = {
-  symbol: "Stock",
-  quantity: "Quantity",
-  price: "Price",
-  priceSource: "Price source",
-  feeUsd: "Fee (USD)",
-  payCurrency: "Pay currency",
-  estimatedPayAmount: "Est. crypto equivalent",
-  loanRef: "Loan",
-  apr: "APR",
+  token: "Token",
+  chainId: "Network ID",
+  targetChainId: "Delivered on network ID",
+  action: "Action",
+  reserveId: "Aave reserve",
   originalRef: "Original order",
-  closesLoan: "Closes loan",
 };
 
 export default function ActivityDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -45,7 +40,7 @@ export default function ActivityDetailPage({ params }: { params: Promise<{ id: s
           <Skeleton className="h-40 w-full" />
         </Card>
       ) : (
-        <Card className="p-5">
+        <Card className="p-6">
           <p className="text-xs text-fg-3">{CATEGORY_LABEL[item.category]}</p>
           <h1 className="mt-1 text-lg font-semibold text-fg">{item.title}</h1>
           <p className="num mt-1 text-[28px] font-semibold tracking-[-0.02em] text-fg">{amountText(item)}</p>
@@ -58,7 +53,6 @@ export default function ActivityDetailPage({ params }: { params: Promise<{ id: s
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center gap-2">
                   <StatusPill status={item.status} />
-                  {item.isSimulated ? <SimulatedBadge /> : null}
                   {item.environment === "sandbox" ? <TestBadge /> : null}
                 </div>
                 {typeof item.details.note === "string" ? <Notice tone="warn">{item.details.note}</Notice> : null}

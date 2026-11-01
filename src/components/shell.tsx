@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useId, useState, type ReactNode } from "react";
-import { Home, LineChart, Landmark, Zap, ListOrdered, Wallet, Settings2, ExternalLink } from "lucide-react";
-import { useStatus } from "@/lib/client/hooks";
-import { useWallet } from "@/lib/client/wallet";
+import { Home, LineChart, Landmark, Zap, ListOrdered, Activity, LogOut, ExternalLink, CheckCircle2, Wallet } from "lucide-react";
+import { useSession } from "@/lib/client/session";
+import { useWallet, WalletActionError } from "@/lib/client/wallet";
 import { fmtCrypto, shortAddress } from "@/lib/shared/format";
-import { Badge, Button, cx, KV, Notice, Sheet } from "./ui";
+import { SignInPanel } from "./auth/sign-in";
+import { Avatar, Badge, Button, Card, cx, KV, Notice, Sheet, Spinner } from "./ui";
 
 const NAV = [
   { href: "/", label: "Home", icon: Home },
@@ -17,264 +18,261 @@ const NAV = [
   { href: "/activity", label: "Activity", icon: ListOrdered },
 ] as const;
 
+const PUBLIC_PATHS = ["/auth/approve", "/status"];
+
 function isActive(path: string, href: string) {
   return href === "/" ? path === "/" : path === href || path.startsWith(`${href}/`);
 }
 
-export function Logo({ className }: { className?: string }) {
-  // Unique gradient id: a duplicated id inside the hidden sidebar copy would blank this one.
+export function Logo({ className, light }: { className?: string; light?: boolean }) {
   const gid = `aura-g-${useId().replace(/:/g, "")}`;
   return (
     <span className={cx("flex items-center gap-2", className)}>
-      <svg viewBox="0 0 28 28" className="size-7" aria-hidden>
+      <svg viewBox="0 0 28 28" className="size-8" aria-hidden>
         <defs>
           <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="#a197ff" />
-            <stop offset="1" stopColor="#4fd1c5" />
+            <stop offset="0" stopColor="#f08a52" />
+            <stop offset="1" stopColor="#e2482a" />
           </linearGradient>
         </defs>
-        <rect width="28" height="28" rx="8" fill="#14141c" />
-        <path d="M8 20 L14 7 L20 20" fill="none" stroke={`url(#${gid})`} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M10.6 15.5 H17.4" stroke={`url(#${gid})`} strokeWidth="2.4" strokeLinecap="round" />
+        <rect width="28" height="28" rx="9" fill={`url(#${gid})`} />
+        <path d="M8.5 19.5 L14 7.5 L19.5 19.5" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M10.9 15.2 H17.1" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" />
       </svg>
-      <span className="text-[17px] font-semibold tracking-[-0.02em] text-fg">AuraPay</span>
+      <span className={cx("text-[18px] font-semibold tracking-[-0.02em]", light ? "text-white" : "text-fg")}>AuraPay</span>
     </span>
   );
 }
 
-function ModeBadge() {
-  const { data } = useStatus();
-  if (!data) return null;
-  const label = { development: "Dev", demo: "Demo", sandbox: "Sandbox", production: "Live" }[data.appMode];
-  const tone = data.appMode === "production" ? "up" : data.appMode === "sandbox" ? "mint" : "warn";
-  return (
-    <Link href="/status" aria-label="Environment and integration status">
-      <Badge tone={tone}>{label} mode</Badge>
-    </Link>
-  );
-}
+// ---------------------------------------------------------------------------
+// Account sheet
+// ---------------------------------------------------------------------------
 
-export function WalletButton({ compact }: { compact?: boolean }) {
+export function AccountSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const w = useWallet();
-  const [open, setOpen] = useState(false);
-  const connected = w.nimiq.status === "connected";
-  return (
-    <>
-      <button
-        onClick={() => setOpen(true)}
-        className={cx(
-          "flex h-9 items-center gap-2 rounded-full border px-3 text-[13px] font-medium transition-colors",
-          connected ? "border-line-strong bg-surface-2 text-fg" : "border-[rgb(139_124_246/0.35)] bg-accent-soft text-accent-strong",
-        )}
-      >
-        <Wallet className="size-4" aria-hidden />
-        {w.host === "detecting" ? "…" : connected ? shortAddress(w.nimiq.addresses[0], 4, 4) : compact ? "Connect" : "Connect wallet"}
-      </button>
-      <WalletSheet open={open} onClose={() => setOpen(false)} />
-    </>
-  );
-}
-
-export function WalletSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const w = useWallet();
-  const { data: status } = useStatus();
+  const session = useSession();
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"nim" | "evm" | null>(null);
-  const deepLink = typeof window !== "undefined" ? `https://nimpay.app/miniapps/open/${window.location.host}` : "#";
-  const networkMismatch = w.hostNetwork && status && w.hostNetwork !== status.nimiq.network;
+  const user = session.user;
 
   return (
-    <Sheet open={open} onClose={onClose} title="Wallet">
-      <div className="space-y-4 pb-2">
-        {w.host === "browser" ? (
-          <Notice tone="info" title="You're viewing AuraPay in a browser">
-            Wallet features need Nimiq Pay. Open AuraPay as a Mini App to connect your wallet and pay with NIM or USDT. You can still explore — demo features are clearly labelled.
-            <div className="mt-2">
-              <a href={deepLink} className="inline-flex items-center gap-1 font-medium text-accent-strong">
-                Open in Nimiq Pay <ExternalLink className="size-3.5" />
-              </a>
+    <Sheet open={open} onClose={onClose} title="Account">
+      {user ? (
+        <div className="space-y-4 pb-2">
+          <div className="flex items-center gap-3">
+            <Avatar seed={user.address} size={52} />
+            <div className="min-w-0">
+              <p className="text-[15px] font-semibold text-fg">Nimiq account</p>
+              <p className="truncate font-mono text-xs text-fg-3">{user.address}</p>
             </div>
-          </Notice>
-        ) : null}
-
-        <div className="rounded-xl border border-line bg-surface-2 p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-fg">Nimiq (NIM)</span>
-            {w.nimiq.status === "connected" ? <Badge tone="up">Connected</Badge> : <Badge>Not connected</Badge>}
           </div>
-          {w.nimiq.status === "connected" ? (
-            <div className="mt-2">
-              <KV k="Address" v={<span className="font-mono text-xs">{shortAddress(w.nimiq.addresses[0], 9, 9)}</span>} />
-              <KV k="Balance" v={w.nimiq.balanceLuna !== null ? fmtCrypto(w.nimiq.balanceLuna / 1e5, "NIM") : w.nimiq.balanceError ?? "—"} />
-              <KV k="Network" v={w.hostNetwork ?? "unknown"} />
+          <div className="rounded-[20px] bg-surface-2 px-4 py-1">
+            <KV k="NIM balance" v={w.nimiq.balanceLuna !== null ? fmtCrypto(w.nimiq.balanceLuna / 1e5, "NIM") : w.host === "nimiq-pay" ? "—" : "Open in Nimiq Pay"} />
+            <KV k="USDT · Polygon" v={w.evm.usdtBalance !== null ? fmtCrypto(w.evm.usdtBalance, "USDT") : "—"} />
+          </div>
+
+          <div className="rounded-[20px] bg-surface-2 p-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-fg">EVM wallet</p>
+              {user.evmAddresses.length ? <Badge tone="up"><CheckCircle2 className="size-3" /> Verified</Badge> : <Badge>Not linked</Badge>}
             </div>
-          ) : (
+            <p className="mt-1 text-xs text-fg-3">Used for USDT payments, tokenised stocks and borrowing. Linking proves ownership with a signature.</p>
+            {user.evmAddresses.map((a) => (
+              <p key={a} className="mt-2 font-mono text-xs text-fg-2">{shortAddress(a, 10, 8)}</p>
+            ))}
+            {!user.evmAddresses.length ? (
+              <Button
+                className="mt-3 w-full"
+                variant="dark"
+                loading={busy}
+                disabled={!w.evm.available}
+                onClick={async () => {
+                  setErr(null);
+                  setBusy(true);
+                  try {
+                    await w.linkEvm();
+                    await session.refresh();
+                  } catch (e) {
+                    if (!(e instanceof WalletActionError && e.kind === "rejected")) setErr((e as Error).message);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                <Wallet className="size-4" /> Verify EVM wallet
+              </Button>
+            ) : null}
+            {!w.evm.available ? <p className="mt-2 text-xs text-fg-3">Open AuraPay in Nimiq Pay to link your EVM wallet.</p> : null}
+          </div>
+          {err ? <Notice tone="error">{err}</Notice> : null}
+          <p className="text-xs leading-relaxed text-fg-3">AuraPay never asks for your recovery phrase or private keys. Every payment is approved in Nimiq Pay.</p>
+          <div className="flex gap-2">
+            <Link href="/status" onClick={onClose} className="flex-1">
+              <Button variant="secondary" className="w-full">
+                <Activity className="size-4" /> Status
+              </Button>
+            </Link>
             <Button
-              className="mt-3 w-full"
-              disabled={w.host !== "nimiq-pay"}
-              loading={busy === "nim"}
+              variant="danger"
+              className="flex-1"
               onClick={async () => {
-                setErr(null);
-                setBusy("nim");
-                try {
-                  await w.connectNimiq();
-                } catch (e) {
-                  setErr((e as Error).message);
-                } finally {
-                  setBusy(null);
-                }
+                await session.signOut();
+                onClose();
               }}
             >
-              Connect Nimiq Pay
+              <LogOut className="size-4" /> Sign out
             </Button>
-          )}
-          {networkMismatch ? (
-            <p className="mt-2 text-xs text-warn">
-              Nimiq Pay is on {w.hostNetwork}, but AuraPay expects {status!.nimiq.network}. Switch networks in Nimiq Pay to pay with NIM.
-            </p>
-          ) : null}
-        </div>
-
-        <div className="rounded-xl border border-line bg-surface-2 p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-fg">USDT on Polygon</span>
-            {w.evm.status === "connected" ? <Badge tone="up">Connected</Badge> : <Badge>Not connected</Badge>}
           </div>
-          {w.evm.status === "connected" ? (
-            <div className="mt-2">
-              <KV k="Address" v={<span className="font-mono text-xs">{shortAddress(w.evm.address, 8, 6)}</span>} />
-              <KV k="Balance" v={w.evm.usdtBalance !== null ? fmtCrypto(w.evm.usdtBalance, "USDT") : "Unavailable"} />
-            </div>
-          ) : (
-            <Button
-              variant="secondary"
-              className="mt-3 w-full"
-              disabled={!w.evm.available}
-              loading={busy === "evm"}
-              onClick={async () => {
-                setErr(null);
-                setBusy("evm");
-                try {
-                  await w.connectEvm();
-                } catch (e) {
-                  setErr((e as Error).message);
-                } finally {
-                  setBusy(null);
-                }
-              }}
-            >
-              Connect USDT wallet
-            </Button>
-          )}
-          <p className="mt-2 text-xs text-fg-3">USDT payments need a little POL for the Polygon network fee.</p>
         </div>
-
-        {err ? <Notice tone="error">{err}</Notice> : null}
-        <p className="text-xs leading-relaxed text-fg-3">
-          AuraPay never asks for your recovery phrase or private keys. Every payment is approved in your wallet&apos;s own confirmation screen.
-        </p>
-        {w.nimiq.status === "connected" || w.evm.status === "connected" ? (
-          <Button variant="ghost" size="sm" onClick={() => w.disconnect()}>
-            Disconnect
-          </Button>
-        ) : null}
-      </div>
+      ) : (
+        <SignInPanel onDone={onClose} />
+      )}
     </Sheet>
   );
 }
 
-function ModeBanner() {
-  const { data } = useStatus();
-  if (!data || data.appMode === "production") return null;
-  const text =
-    data.appMode === "development"
-      ? "Development mode — investing and borrowing are simulated; payments may be simulated. Everything simulated is labelled."
-      : data.appMode === "sandbox"
-      ? "Sandbox mode — top-ups use the provider's test environment and are not delivered."
-      : "Demo mode — investing and borrowing are simulated; payments may be simulated. Everything simulated is labelled.";
+// ---------------------------------------------------------------------------
+// Header + navigation
+// ---------------------------------------------------------------------------
+
+export function Greeting() {
+  const session = useSession();
+  const [open, setOpen] = useState(false);
+  const user = session.user;
+  if (!user) return null;
   return (
-    <div className="border-b border-[rgb(251_191_36/0.14)] bg-[rgb(251_191_36/0.06)] px-4 py-1.5 text-center text-[11.5px] text-warn">
-      {text}{" "}
-      <Link href="/status" className="underline underline-offset-2">
-        Details
+    <>
+      <div className="flex items-center justify-between gap-3">
+        <button onClick={() => setOpen(true)} className="flex min-w-0 items-center gap-3 text-left">
+          <Avatar seed={user.address} size={44} />
+          <span className="min-w-0">
+            <span className="block text-[17px] font-semibold text-fg">Hello 👋</span>
+            <span className="block truncate font-mono text-xs text-fg-3">{shortAddress(user.address, 9, 4)}</span>
+          </span>
+        </button>
+        <Link href="/status" aria-label="Status" className="grid size-11 place-items-center rounded-full bg-surface text-fg shadow-[var(--shadow-card)]">
+          <Activity className="size-[18px]" />
+        </Link>
+      </div>
+      <AccountSheet open={open} onClose={() => setOpen(false)} />
+    </>
+  );
+}
+
+function FloatingNav({ path }: { path: string }) {
+  return (
+    <nav aria-label="Primary" className="fixed inset-x-0 bottom-[calc(14px+var(--safe-bottom))] z-40 flex justify-center px-4 lg:hidden">
+      <ul className="flex items-center gap-1.5 rounded-full bg-[rgb(255_255_255/0.82)] p-1.5 shadow-[var(--shadow-float)] ring-1 ring-black/5 backdrop-blur-xl">
+        {NAV.map(({ href, label, icon: Icon }) => {
+          const active = isActive(path, href);
+          return (
+            <li key={href}>
+              <Link
+                href={href}
+                aria-label={label}
+                aria-current={active ? "page" : undefined}
+                className={cx(
+                  "flex h-12 items-center justify-center gap-2 rounded-full transition-all",
+                  active ? "bg-accent px-5 text-white" : "w-12 bg-white text-fg shadow-[0_1px_3px_rgb(0_0_0/0.08)]",
+                )}
+              >
+                <Icon className="size-[19px]" strokeWidth={active ? 2.2 : 1.9} />
+                {active ? <span className="text-[14px] font-medium">{label}</span> : null}
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
+  );
+}
+
+function Sidebar({ path }: { path: string }) {
+  const session = useSession();
+  const [open, setOpen] = useState(false);
+  return (
+    <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col px-5 py-7 lg:flex">
+      <Link href="/" className="px-2">
+        <Logo />
       </Link>
+      <nav className="mt-9 space-y-1.5" aria-label="Primary">
+        {NAV.map(({ href, label, icon: Icon }) => {
+          const active = isActive(path, href);
+          return (
+            <Link
+              key={href}
+              href={href}
+              className={cx(
+                "flex h-12 items-center gap-3 rounded-full px-4 text-[15px] font-medium transition-colors",
+                active ? "bg-accent text-white shadow-[0_6px_16px_rgb(232_98_44/0.28)]" : "text-fg-2 hover:bg-white hover:text-fg",
+              )}
+            >
+              <Icon className="size-[19px]" />
+              {label}
+            </Link>
+          );
+        })}
+      </nav>
+      {session.user ? (
+        <button onClick={() => setOpen(true)} className="mt-auto flex items-center gap-3 rounded-[20px] bg-white p-3 text-left shadow-[var(--shadow-card)]">
+          <Avatar seed={session.user.address} size={40} />
+          <span className="min-w-0">
+            <span className="block text-sm font-semibold text-fg">My account</span>
+            <span className="block truncate font-mono text-[11px] text-fg-3">{shortAddress(session.user.address, 9, 4)}</span>
+          </span>
+        </button>
+      ) : null}
+      <AccountSheet open={open} onClose={() => setOpen(false)} />
+    </aside>
+  );
+}
+
+function SignInGate() {
+  return (
+    <div className="mx-auto max-w-[440px] pt-6">
+      <Card className="p-6">
+        <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-fg">Sign in to continue</h1>
+        <p className="mt-1 mb-5 text-sm text-fg-2">Use your Nimiq Pay wallet — no passwords, no seed phrases.</p>
+        <SignInPanel />
+      </Card>
+      <p className="mt-4 text-center text-xs text-fg-3">
+        New to Nimiq Pay?{" "}
+        <a className="inline-flex items-center gap-1 text-accent" href="https://nimiq.com/nimiq-pay" target="_blank" rel="noreferrer">
+          Get the app <ExternalLink className="size-3" />
+        </a>
+      </p>
     </div>
   );
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
   const path = usePathname();
-  return (
-    <div className="min-h-dvh">
-      <ModeBanner />
-      <div className="mx-auto flex max-w-[1240px]">
-        {/* Desktop sidebar */}
-        <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col border-r border-line px-4 py-6 lg:flex">
-          <Link href="/" className="px-2">
-            <Logo />
-          </Link>
-          <nav className="mt-8 space-y-1" aria-label="Primary">
-            {NAV.map(({ href, label, icon: Icon }) => (
-              <Link
-                key={href}
-                href={href}
-                className={cx(
-                  "flex h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors",
-                  isActive(path, href) ? "bg-surface-2 text-fg" : "text-fg-3 hover:bg-surface hover:text-fg-2",
-                )}
-              >
-                <Icon className={cx("size-[18px]", isActive(path, href) && "text-accent-strong")} aria-hidden />
-                {label}
-              </Link>
-            ))}
-          </nav>
-          <div className="mt-auto space-y-3">
-            <Link href="/status" className={cx("flex h-9 items-center gap-3 rounded-lg px-3 text-[13px] text-fg-3 hover:text-fg-2", path === "/status" && "text-fg")}>
-              <Settings2 className="size-4" aria-hidden /> Status & integrations
-            </Link>
-            <div className="px-2">
-              <WalletButton />
-            </div>
-          </div>
-        </aside>
+  const session = useSession();
+  const isPublic = PUBLIC_PATHS.some((p) => path.startsWith(p));
+  const isLanding = path === "/" && !session.user;
 
-        <div className="app-glow min-w-0 flex-1">
-          {/* Mobile top bar */}
-          <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-line bg-bg/85 px-4 pt-[var(--safe-top)] backdrop-blur-md lg:hidden">
-            <Link href="/">
-              <Logo />
-            </Link>
-            <div className="flex items-center gap-2">
-              <ModeBadge />
-              <WalletButton compact />
-            </div>
-          </header>
-          <div className="hidden h-14 items-center justify-end gap-3 px-8 lg:flex">
-            <ModeBadge />
-          </div>
-          <main className="mx-auto w-full max-w-[920px] px-4 pt-5 pb-[calc(96px+var(--safe-bottom))] sm:px-6 lg:px-8 lg:pt-0 lg:pb-16">{children}</main>
+  if (path.startsWith("/auth/")) return <>{children}</>;
+  if (session.loading && !isPublic) {
+    return (
+      <div className="grid min-h-dvh place-items-center">
+        <Spinner />
+      </div>
+    );
+  }
+  if (isLanding) return <>{children}</>;
+
+  const gated = !session.user && !isPublic;
+  return (
+    <div className="app-glow min-h-dvh">
+      <div className="mx-auto flex max-w-[1240px]">
+        <Sidebar path={path} />
+        <div className="min-w-0 flex-1">
+          <main className="mx-auto w-full max-w-[880px] px-4 pt-[calc(18px+var(--safe-top))] pb-[calc(110px+var(--safe-bottom))] sm:px-6 lg:px-8 lg:pt-10 lg:pb-16">
+            {gated ? <SignInGate /> : children}
+          </main>
         </div>
       </div>
-
-      {/* Mobile bottom navigation */}
-      <nav
-        aria-label="Primary"
-        className="fixed inset-x-0 bottom-0 z-40 border-t border-line bg-[rgb(10_10_15/0.92)] pb-[var(--safe-bottom)] backdrop-blur-md lg:hidden"
-      >
-        <ul className="mx-auto flex max-w-lg">
-          {NAV.map(({ href, label, icon: Icon }) => {
-            const active = isActive(path, href);
-            return (
-              <li key={href} className="flex-1">
-                <Link href={href} className={cx("flex h-16 flex-col items-center justify-center gap-1 text-[11px] font-medium", active ? "text-fg" : "text-fg-3")}>
-                  <Icon className={cx("size-[21px]", active && "text-accent-strong")} strokeWidth={active ? 2.2 : 1.8} aria-hidden />
-                  {label}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
-      </nav>
+      {session.user ? <FloatingNav path={path} /> : null}
     </div>
   );
 }

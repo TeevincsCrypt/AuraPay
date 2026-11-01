@@ -3,17 +3,18 @@ import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { AppShell } from "@/components/shell";
 import { StatusProvider } from "@/lib/client/hooks";
+import { SessionProvider } from "@/lib/client/session";
 import { WalletProvider } from "@/lib/client/wallet";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "AuraPay — Your money. Without borders.",
-  description: "Invest in global markets, borrow against your investments and pay for airtime, data and electricity across Africa with Nimiq Pay.",
+  description: "Pay for airtime, data and electricity across Africa, invest in tokenised US stocks and borrow against them — with your Nimiq Pay wallet.",
   applicationName: "AuraPay",
 };
 
 export const viewport: Viewport = {
-  themeColor: "#07070b",
+  themeColor: "#f6f4f2",
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
@@ -25,7 +26,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <StatusProvider>
           <WalletProvider>
-            <AppShell>{children}</AppShell>
+            <SessionProvider>
+              <AppShell>{children}</AppShell>
+            </SessionProvider>
           </WalletProvider>
         </StatusProvider>
       </body>

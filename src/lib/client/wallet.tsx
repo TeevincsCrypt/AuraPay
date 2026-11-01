@@ -66,6 +66,12 @@ export class WalletActionError extends Error {
 interface WalletApi extends WalletState {
   connectNimiq(): Promise<void>;
   connectEvm(): Promise<string>;
+  /** Signs a text message with Nimiq Pay (used for sign-in). */
+  signNimiq(message: string): Promise<{ publicKey: string; signature: string }>;
+  /** Connects the EVM wallet and proves control of it to the server with personal_sign. */
+  linkEvm(): Promise<string>;
+  ensureChain(chainIdHex: string): Promise<void>;
+  sendEvmTx(p: { chainIdHex: string; to: string; data: string }): Promise<{ hash: string; from: string }>;
   refreshBalances(): Promise<void>;
   disconnect(): void;
   payNim(p: { recipient: string; luna: string; memo: string }): Promise<string>;
@@ -151,7 +157,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       try {
         localStorage.setItem(LS_KEY, "1");
       } catch {}
-      void api("/api/wallet/link", { method: "POST", json: { chain: "nimiq", network: window.nimiqPay?.network ?? "unknown", addresses } }).catch(() => {});
       await loadNimBalance(addresses[0]);
     } catch (err) {
       const a = err instanceof WalletActionError ? err : nimiqErrorToAction(err);
@@ -169,7 +174,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const address = accounts?.[0]?.toLowerCase();
       if (!address) throw new WalletActionError("failed", "No account was shared.");
       setState((s) => ({ ...s, evm: { ...s.evm, status: "connected", address } }));
-      void api("/api/wallet/link", { method: "POST", json: { chain: "polygon", network: "polygon", addresses: [address] } }).catch(() => {});
       void loadUsdtBalance(address);
       return address;
     } catch (err) {
@@ -267,9 +271,65 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const signNimiq = useCallback(async (message: string) => {
+    const nimiq = providerRef.current;
+    if (!nimiq) throw new WalletActionError("unsupported", "Open AuraPay inside Nimiq Pay to sign in.");
+    try {
+      const r = await nimiq.sign(message);
+      return { publicKey: r.publicKey, signature: r.signature };
+    } catch (err) {
+      throw nimiqErrorToAction(err);
+    }
+  }, []);
+
+  const linkEvm = useCallback(async () => {
+    const eth = window.ethereum;
+    if (!eth) throw new WalletActionError("unsupported", "Open AuraPay inside Nimiq Pay to connect your EVM wallet.");
+    const address = await connectEvm();
+    try {
+      const ch = await api<{ id: string; message: string }>("/api/auth/evm/challenge", { method: "POST", json: { address } });
+      const signature = (await eth.request({ method: "personal_sign", params: [ch.message, address] })) as string;
+      await api("/api/auth/evm/verify", { method: "POST", json: { challengeId: ch.id, signature } });
+      return address;
+    } catch (err) {
+      throw err instanceof WalletActionError ? err : (err as { code?: number }).code ? evmErrorToAction(err) : err;
+    }
+  }, [connectEvm]);
+
+  const ensureChain = useCallback(async (chainIdHex: string) => {
+    const eth = window.ethereum;
+    if (!eth) throw new WalletActionError("unsupported", "No EVM wallet available.");
+    try {
+      const current = (await eth.request({ method: "eth_chainId" })) as string;
+      if (current?.toLowerCase() !== chainIdHex.toLowerCase()) {
+        await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: chainIdHex }] });
+      }
+    } catch (err) {
+      throw evmErrorToAction(err);
+    }
+  }, []);
+
+  const sendEvmTx = useCallback(
+    async ({ chainIdHex, to, data }: { chainIdHex: string; to: string; data: string }) => {
+      const eth = window.ethereum;
+      if (!eth) throw new WalletActionError("unsupported", "No EVM wallet available.");
+      await ensureChain(chainIdHex);
+      try {
+        const accounts = (await eth.request({ method: "eth_requestAccounts" })) as string[];
+        const from = accounts?.[0];
+        if (!from) throw new WalletActionError("failed", "No account was shared.");
+        const hash = (await eth.request({ method: "eth_sendTransaction", params: [{ from, to, data, value: "0x0" }] })) as string;
+        return { hash, from: from.toLowerCase() };
+      } catch (err) {
+        throw err instanceof WalletActionError ? err : evmErrorToAction(err);
+      }
+    },
+    [ensureChain],
+  );
+
   const value = useMemo<WalletApi>(
-    () => ({ ...state, connectNimiq, connectEvm, refreshBalances, disconnect, payNim, payUsdt }),
-    [state, connectNimiq, connectEvm, refreshBalances, disconnect, payNim, payUsdt],
+    () => ({ ...state, connectNimiq, connectEvm, refreshBalances, disconnect, payNim, payUsdt, signNimiq, linkEvm, ensureChain, sendEvmTx }),
+    [state, connectNimiq, connectEvm, refreshBalances, disconnect, payNim, payUsdt, signNimiq, linkEvm, ensureChain, sendEvmTx],
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;

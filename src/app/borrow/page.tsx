@@ -1,347 +1,329 @@
 "use client";
 
-import Link from "next/link";
-import { useMemo, useState } from "react";
-import { Landmark } from "lucide-react";
-import { LtvMeter } from "@/components/charts";
+import { useState } from "react";
+import { encodeFunctionData, erc20Abi, parseUnits, type Abi } from "viem";
+import { ExternalLink, Landmark, Wallet } from "lucide-react";
+import { HealthMeter } from "@/components/charts";
 import { StockLogo } from "@/components/invest/stock-row";
-import { Badge, Button, Card, CardHeader, EmptyState, ErrorState, Field, Input, KV, Notice, PageHeader, Segmented, Sheet, SimulatedBadge, Skeleton } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, ErrorState, Field, Input, KV, Notice, PageHeader, SectionTitle, Sheet, Skeleton } from "@/components/ui";
 import { api } from "@/lib/client/api";
 import { useApi } from "@/lib/client/hooks";
-import { fmtDate, fmtNum, fmtPct, fmtUsd } from "@/lib/shared/format";
-import type { LoanDTO } from "@/lib/shared/types";
+import { useSession } from "@/lib/client/session";
+import { useWallet, WalletActionError } from "@/lib/client/wallet";
+import { AAVE_CHAIN_HEX, AAVE_MAG7_SPOKE, SPOKE_ABI } from "@/lib/shared/aave";
+import { fmtNum, fmtPct, fmtUsd } from "@/lib/shared/format";
+import type { BorrowOverviewDTO, LendingReserveDTO } from "@/lib/shared/types";
 
-interface Overview {
-  status: { state: "connected" | "simulator" | "unavailable"; reason: string };
-  params: { maxLtv: number; liquidationLtv: number; apr: number; terms: number[] };
-  collateral: {
-    symbol: string;
-    name: string;
-    quantity: number;
-    lockedQuantity: number;
-    availableQuantity: number;
-    price: number | null;
-    availableValue: number | null;
-    advanceRate: number;
-    borrowCapacity: number | null;
-  }[];
-  loans: LoanDTO[];
-  totals: {
-    eligibleCollateralUsd: number;
-    lockedCollateralUsd: number;
-    outstandingUsdt: number;
-    availableToBorrowUsdt: number;
-    currentLtv: number | null;
-    health: number | null;
-  };
-}
+type Action = "supply" | "withdraw" | "borrow" | "repay";
 
-const usdt = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${fmtNum(v, 2, 2)} USDT`);
+const spokeAbi = SPOKE_ABI as unknown as Abi;
 
-function healthLabel(h: number | null): { label: string; tone: "up" | "warn" | "down" | "neutral" } {
-  if (h === null) return { label: "No debt", tone: "neutral" };
-  if (h >= 1.5) return { label: "Healthy", tone: "up" };
-  if (h >= 1.1) return { label: "Watch", tone: "warn" };
+function healthLabel(hf: number | null): { label: string; tone: "up" | "warn" | "down" | "neutral" } {
+  if (hf === null) return { label: "No debt", tone: "neutral" };
+  if (hf >= 1.5) return { label: "Healthy", tone: "up" };
+  if (hf >= 1.1) return { label: "Watch", tone: "warn" };
   return { label: "At risk", tone: "down" };
 }
 
 export default function BorrowPage() {
-  const q = useApi<Overview>("/api/borrow");
-  const [selected, setSelected] = useState<Record<string, boolean>>({});
-  const [amount, setAmount] = useState("");
-  const [term, setTerm] = useState(90);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const q = useApi<BorrowOverviewDTO>("/api/borrow");
+  const session = useSession();
+  const w = useWallet();
+  const [sheet, setSheet] = useState<{ action: Action; reserve: LendingReserveDTO } | null>(null);
+  const [linking, setLinking] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [repay, setRepay] = useState<LoanDTO | null>(null);
-
   const d = q.data;
-  const chosen = useMemo(() => (d?.collateral ?? []).filter((c) => selected[c.symbol] && c.availableQuantity > 0), [d, selected]);
-  const collateralValue = chosen.reduce((s, c) => s + (c.availableValue ?? 0), 0);
-  const capacity = chosen.reduce((s, c) => s + (c.borrowCapacity ?? 0), 0);
-  const value = Number(amount);
-  const ltv = collateralValue > 0 && value > 0 ? value / collateralValue : null;
-  const interest = value > 0 && d ? value * d.params.apr * (term / 365) : 0;
-  const liquidationValue = d && value > 0 ? value / d.params.liquidationLtv : null;
-  const valid = d && value >= 10 && value <= capacity + 1e-6 && chosen.length > 0;
-
-  const open = async () => {
-    if (!d) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      await api("/api/borrow/loans", {
-        method: "POST",
-        json: { amountUsdt: value, termDays: term, collateral: chosen.map((c) => ({ symbol: c.symbol, quantity: c.availableQuantity })), simulated: true },
-      });
-      setConfirmOpen(false);
-      setAmount("");
-      setSelected({});
-      await q.refetch();
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const h = healthLabel(d?.totals.health ?? null);
+  const collateral = d?.reserves.filter((r) => r.ticker && r.collateralFactor > 0) ?? [];
+  const usdc = d?.reserves.find((r) => r.borrowable && !r.ticker) ?? null;
+  const a = d?.account ?? null;
+  const h = healthLabel(a?.healthFactor ?? null);
+  const verified = session.user?.evmAddresses.length ?? 0;
 
   return (
-    <div className="space-y-6">
-      <PageHeader title="Borrow" subtitle="Get USDT against your investments — without selling them." action={d?.status.state === "simulator" ? <SimulatedBadge /> : undefined} />
-
-      {d ? (
-        <Notice tone={d.status.state === "unavailable" ? "error" : "warn"} title={d.status.state === "simulator" ? "Lending simulator" : "Lending unavailable"}>
-          {d.status.reason}
-        </Notice>
-      ) : null}
+    <div className="space-y-7">
+      <PageHeader title="Borrow" subtitle="USDC against your stock tokens — without selling them." />
 
       {q.error ? (
         <Card>
           <ErrorState message={q.error.message} onRetry={q.refetch} />
         </Card>
       ) : !d ? (
-        <Skeleton className="h-40 w-full" />
+        <Skeleton className="h-48 w-full rounded-[32px]" />
+      ) : !d.available ? (
+        <Notice tone="error" title="Lending unavailable">{d.reason}</Notice>
       ) : (
         <>
-          {/* Dashboard */}
-          <Card>
-            <div className="grid grid-cols-2 gap-px bg-line sm:grid-cols-4">
+          <section className="hero-surface -mx-4 rounded-[32px] px-5 pt-5 pb-6 sm:mx-0">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-[15px] text-fg-2">You can borrow</p>
+                <p className="num mt-1 text-[36px] font-semibold tracking-[-0.03em] text-fg">{fmtUsd(a?.borrowCapacityUsd ?? 0)}</p>
+              </div>
+              <Badge tone={h.tone}>{h.label}</Badge>
+            </div>
+            <div className="mt-4 grid grid-cols-3 gap-2">
               {[
-                ["Eligible collateral", fmtUsd(d.totals.eligibleCollateralUsd)],
-                ["Outstanding loans", usdt(d.totals.outstandingUsdt)],
-                ["Available to borrow", usdt(d.totals.availableToBorrowUsdt)],
-                ["Max loan-to-value", fmtPct(d.params.maxLtv * 100, { digits: 0 })],
+                ["Collateral", fmtUsd(a?.collateralUsd ?? 0)],
+                ["Borrowed", fmtUsd(a?.debtUsd ?? 0)],
+                ["Health", a?.healthFactor !== null && a?.healthFactor !== undefined ? a.healthFactor.toFixed(2) : "—"],
               ].map(([k, v]) => (
-                <div key={k} className="bg-surface px-4 py-3.5 sm:px-5">
-                  <p className="text-xs text-fg-3">{k}</p>
-                  <p className="num mt-0.5 text-[15px] font-semibold text-fg">{v}</p>
+                <div key={k} className="rounded-[18px] bg-white/75 px-3 py-2.5">
+                  <p className="text-[11.5px] text-fg-3">{k}</p>
+                  <p className="num text-[15px] font-semibold text-fg">{v}</p>
                 </div>
               ))}
             </div>
-            <div className="px-4 py-4 sm:px-5">
-              <div className="mb-2 flex items-center justify-between text-xs">
-                <span className="text-fg-3">
-                  Loan health {d.totals.currentLtv !== null ? `· LTV ${fmtPct(d.totals.currentLtv * 100, { digits: 1 })}` : ""}
-                </span>
-                <Badge tone={h.tone}>{h.label}</Badge>
-              </div>
-              <LtvMeter ltv={d.totals.currentLtv} maxLtv={d.params.maxLtv} liquidationLtv={d.params.liquidationLtv} />
+            <div className="mt-5">
+              <HealthMeter healthFactor={a?.healthFactor ?? null} />
             </div>
-          </Card>
+          </section>
 
-          {/* Collateral & calculator */}
-          {d.status.state === "simulator" ? (
-            <div className="grid gap-6 lg:grid-cols-2">
-              <Card>
-                <CardHeader title="Use your investments as collateral" subtitle="Only simulated demo positions can be used in the simulator." />
-                {d.collateral.length === 0 ? (
-                  <EmptyState icon={<Landmark className="size-5" />} title="No eligible investments" action={<Link href="/invest"><Button size="sm" variant="secondary">Go to Invest</Button></Link>}>
-                    Place a simulated stock order first, then come back to borrow against it.
-                  </EmptyState>
-                ) : (
-                  <ul className="divide-y divide-line pb-1">
-                    {d.collateral.map((c) => (
-                      <li key={c.symbol}>
-                        <label className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-surface-2 sm:px-5">
-                          <input
-                            type="checkbox"
-                            disabled={c.availableQuantity <= 0 || c.price === null}
-                            checked={Boolean(selected[c.symbol])}
-                            onChange={(e) => setSelected((s) => ({ ...s, [c.symbol]: e.target.checked }))}
-                            className="size-4 accent-[var(--color-accent)]"
-                          />
-                          <StockLogo q={{ symbol: c.symbol, logoUrl: null }} size={32} />
-                          <span className="min-w-0 flex-1">
-                            <span className="block text-sm font-medium text-fg">{c.symbol}</span>
-                            <span className="block text-xs text-fg-3">
-                              {fmtNum(c.availableQuantity, 6)} available{c.lockedQuantity > 0 ? ` · ${fmtNum(c.lockedQuantity, 6)} locked` : ""}
-                            </span>
-                          </span>
-                          <span className="text-right">
-                            <span className="num block text-sm text-fg">{fmtUsd(c.availableValue)}</span>
-                            <span className="num block text-xs text-fg-3">
-                              {fmtPct(c.advanceRate * 100, { digits: 0 })} → {usdt(c.borrowCapacity)}
-                            </span>
-                          </span>
-                        </label>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </Card>
+          {!w.evm.available ? (
+            <Notice tone="warn" title="Open AuraPay in Nimiq Pay">Borrowing is done from your Nimiq Pay EVM wallet on Base.</Notice>
+          ) : !verified ? (
+            <Notice
+              tone="info"
+              title="Verify your EVM wallet"
+              action={
+                <Button
+                  size="sm"
+                  variant="dark"
+                  loading={linking}
+                  onClick={async () => {
+                    setErr(null);
+                    setLinking(true);
+                    try {
+                      await w.linkEvm();
+                      await session.refresh();
+                      await q.refetch();
+                    } catch (e) {
+                      if (!(e instanceof WalletActionError && e.kind === "rejected")) setErr((e as Error).message);
+                    } finally {
+                      setLinking(false);
+                    }
+                  }}
+                >
+                  <Wallet className="size-4" /> Verify wallet
+                </Button>
+              }
+            >
+              Sign once so AuraPay can read your Aave position and record your loans.
+            </Notice>
+          ) : null}
+          {err ? <Notice tone="error">{err}</Notice> : null}
 
-              <Card className="p-4 sm:p-5">
-                <h2 className="text-[13px] font-medium text-fg-2">Loan calculator</h2>
-                <div className="mt-3 space-y-4">
-                  <Field label="Borrow amount" htmlFor="loan-amt" hint={chosen.length ? `Up to ${usdt(capacity)} with the selected collateral` : "Select collateral first"}>
-                    <Input id="loan-amt" inputMode="decimal" placeholder="0" trail="USDT" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} disabled={!chosen.length} />
-                  </Field>
-                  <Field label="Duration">
-                    <Segmented className="w-full" value={String(term)} onChange={(v) => setTerm(Number(v))} options={d.params.terms.map((t) => ({ value: String(t), label: `${t} days` }))} />
-                  </Field>
-                  <div className="rounded-xl border border-line bg-surface-2 px-3.5 py-1">
-                    <KV k="Collateral value" v={fmtUsd(collateralValue)} />
-                    <KV k="Loan-to-value" v={ltv !== null ? fmtPct(ltv * 100, { digits: 1 }) : "—"} />
-                    <KV k="Interest rate" v={`${fmtPct(d.params.apr * 100, { digits: 1 })} APR (fixed, simple)`} />
-                    <KV k={`Interest over ${term} days`} v={usdt(interest)} />
-                    <KV k="Estimated repayment" v={usdt(value > 0 ? value + interest : null)} strong />
-                    <KV k="Liquidation if collateral falls below" v={fmtUsd(liquidationValue)} />
+          {usdc ? (
+            <section>
+              <SectionTitle>Your loan</SectionTitle>
+              <Card className="p-5">
+                <div className="flex items-center gap-3">
+                  <span className="grid size-11 place-items-center rounded-full bg-[#2775ca] text-[11px] font-bold text-white">USDC</span>
+                  <div className="flex-1">
+                    <p className="text-[15px] font-semibold text-fg">USDC on Base</p>
+                    <p className="text-[13px] text-fg-3">
+                      Variable rate {usdc.borrowApr !== null ? fmtPct(usdc.borrowApr * 100) : "—"} APR
+                      {a?.riskPremiumBps ? ` + your risk premium ${fmtPct(a.riskPremiumBps / 100)}` : ""}
+                    </p>
                   </div>
-                  {value > capacity + 1e-6 && chosen.length ? <Notice tone="error">That&apos;s more than this collateral supports.</Notice> : null}
-                  <Button size="lg" disabled={!valid} onClick={() => setConfirmOpen(true)}>
-                    Review loan
+                </div>
+                <KV k="Outstanding debt" v={`${fmtNum(usdc.debt, 2, 2)} USDC`} strong className="mt-2" />
+                <KV k="USDC in wallet" v={`${fmtNum(usdc.walletBalance, 2, 2)} USDC`} />
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <Button disabled={!verified || usdc.paused || usdc.frozen || !(a && a.borrowCapacityUsd > 0)} onClick={() => setSheet({ action: "borrow", reserve: usdc })}>
+                    Borrow
+                  </Button>
+                  <Button variant="secondary" disabled={!verified || usdc.debt <= 0} onClick={() => setSheet({ action: "repay", reserve: usdc })}>
+                    Repay
                   </Button>
                 </div>
               </Card>
-            </div>
+            </section>
           ) : null}
 
-          {/* Loans */}
-          <Card>
-            <CardHeader title="Your loans" />
-            {d.loans.length === 0 ? (
-              <EmptyState title="No loans yet">Loans you open will appear here with their health and repayment progress.</EmptyState>
-            ) : (
-              <ul className="divide-y divide-line">
-                {d.loans.map((l) => {
-                  const lh = healthLabel(l.status === "active" ? l.health : null);
-                  const progress = l.totalOwed > 0 ? Math.min(1, l.repaidUsdt / l.totalOwed) : 0;
-                  return (
-                    <li key={l.id} className="px-4 py-4 sm:px-5">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-fg">{usdt(l.principalUsdt)}</span>
-                            {l.isSimulated ? <SimulatedBadge /> : null}
-                            <Badge tone={l.status === "active" ? "accent" : "neutral"}>{l.status}</Badge>
-                          </div>
-                          <p className="mt-0.5 text-xs text-fg-3">
-                            {l.ref} · {l.termDays} days · {fmtPct(l.apr * 100, { digits: 1 })} APR · due {fmtDate(l.dueAt, false)}
+          <section>
+            <SectionTitle>Use your stocks as collateral</SectionTitle>
+            <Card className="overflow-hidden">
+              {collateral.length === 0 ? (
+                <EmptyState icon={<Landmark className="size-5" />} title="No collateral assets">Aave hasn&apos;t listed any stock collateral on this market.</EmptyState>
+              ) : (
+                <ul className="divide-y divide-line py-1">
+                  {collateral.map((r) => (
+                    <li key={r.reserveId} className="px-5 py-4">
+                      <div className="flex items-center gap-3">
+                        <StockLogo q={{ symbol: r.ticker!, logoUrl: null }} />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[15px] font-semibold text-fg">
+                            {r.symbol} {r.usingAsCollateral && r.supplied > 0 ? <Badge tone="up" className="ml-1">Collateral</Badge> : null}
+                          </p>
+                          <p className="text-[13px] text-fg-3">
+                            Borrow up to {fmtPct(r.collateralFactor * 100, { digits: 0 })} of its value · {r.priceUsd !== null ? fmtUsd(r.priceUsd) : "—"}
                           </p>
                         </div>
-                        {l.status === "active" ? (
-                          <Button size="sm" variant="secondary" onClick={() => setRepay(l)}>
-                            Repay
-                          </Button>
-                        ) : null}
                       </div>
-                      <div className="mt-3 grid grid-cols-2 gap-x-6 sm:grid-cols-4">
-                        <KV k="Interest accrued" v={usdt(l.accruedInterest)} />
-                        <KV k="Outstanding" v={usdt(l.outstanding)} />
-                        <KV k="Collateral" v={fmtUsd(l.collateralValue)} />
-                        <KV k="Health" v={<Badge tone={lh.tone}>{lh.label}</Badge>} />
+                      <div className="mt-2 grid grid-cols-2 gap-x-6">
+                        <KV k="In wallet" v={fmtNum(r.walletBalance, 4)} />
+                        <KV k="Supplied" v={fmtNum(r.supplied, 4)} />
                       </div>
-                      <div className="mt-2">
-                        <div className="h-1.5 w-full rounded-full bg-surface-3">
-                          <div className="h-full rounded-full bg-mint" style={{ width: `${progress * 100}%` }} />
-                        </div>
-                        <p className="num mt-1 text-[11px] text-fg-3">
-                          {fmtPct(progress * 100, { digits: 0 })} repaid · collateral {l.collateral.map((c) => `${fmtNum(c.quantity, 4)} ${c.symbol}`).join(", ")}
-                        </p>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <Button size="sm" variant="dark" disabled={!verified || r.walletBalance <= 0 || r.paused || r.frozen} onClick={() => setSheet({ action: "supply", reserve: r })}>
+                          Add collateral
+                        </Button>
+                        <Button size="sm" variant="secondary" disabled={!verified || r.supplied <= 0 || r.paused} onClick={() => setSheet({ action: "withdraw", reserve: r })}>
+                          Withdraw
+                        </Button>
                       </div>
                     </li>
-                  );
-                })}
-              </ul>
-            )}
-          </Card>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          </section>
 
-          <div className="space-y-1.5 text-xs leading-relaxed text-fg-3">
+          <div className="space-y-2 px-1 text-xs leading-relaxed text-fg-3">
             <p>
-              <span className="text-fg-2">How collateral works.</span> Your investments stay yours but are locked while the loan is open. Each asset counts for a share of its value (its advance rate) — more volatile stocks count for less.
+              <span className="font-medium text-fg-2">How it works.</span> Your Coinbase stock tokens on Base are supplied to Aave V4&apos;s MAG7 market as collateral; you borrow USDC against them. Everything happens in your own wallet — AuraPay never holds your assets.
             </p>
             <p>
-              <span className="text-fg-2">Liquidation risk.</span> If your collateral&apos;s value falls until your loan reaches {fmtPct(d.params.liquidationLtv * 100, { digits: 0 })} of it, collateral can be sold to repay the loan.
+              <span className="font-medium text-fg-2">Liquidation risk.</span> If your health factor falls below 1.0 (for example because stock prices drop), part of your collateral can be sold by liquidators to repay the loan. Keep it comfortably above 1.5.
             </p>
             <p>
-              <span className="text-fg-2">Interest.</span> Simple interest accrues daily at the stated APR on the amount borrowed.
+              <span className="font-medium text-fg-2">Interest.</span> The variable rate changes with market demand; Aave may add a risk premium based on your collateral. You need a little ETH on Base for network fees.
             </p>
+            <a className="inline-flex items-center gap-1 text-accent" href={`https://basescan.org/address/${AAVE_MAG7_SPOKE}`} target="_blank" rel="noreferrer">
+              Aave V4 MAG7 contract <ExternalLink className="size-3" />
+            </a>
           </div>
         </>
       )}
 
-      <Sheet
-        open={confirmOpen}
-        onClose={() => setConfirmOpen(false)}
-        title="Confirm loan"
-        footer={
-          <Button size="lg" loading={busy} onClick={open}>
-            Open simulated loan
-          </Button>
-        }
-      >
-        {d ? (
-          <div className="space-y-4">
-            <Notice tone="warn" title="Simulation">
-              No USDT will be sent to your wallet and no collateral is actually locked on-chain. This shows how an asset-backed loan would work.
-            </Notice>
-            <div className="rounded-xl border border-line bg-surface-2 px-3.5 py-1">
-              <KV k="You borrow" v={usdt(value)} strong />
-              <KV k="Duration" v={`${term} days`} />
-              <KV k="Interest" v={`${usdt(interest)} (${fmtPct(d.params.apr * 100, { digits: 1 })} APR)`} />
-              <KV k="Repay by end of term" v={usdt(value + interest)} />
-              <KV k="Collateral locked" v={chosen.map((c) => `${fmtNum(c.availableQuantity, 4)} ${c.symbol}`).join(", ")} />
-              <KV k="Loan-to-value" v={ltv !== null ? fmtPct(ltv * 100, { digits: 1 }) : "—"} />
-              <KV k="Liquidation threshold" v={fmtPct(d.params.liquidationLtv * 100, { digits: 0 })} />
-            </div>
-            {err ? <Notice tone="error">{err}</Notice> : null}
-          </div>
-        ) : null}
-      </Sheet>
-
-      <RepaySheet loan={repay} onClose={() => setRepay(null)} onDone={q.refetch} />
+      {sheet && d?.owner ? (
+        <ActionSheet
+          action={sheet.action}
+          reserve={sheet.reserve}
+          owner={d.owner}
+          account={d.account}
+          usdc={usdc}
+          onClose={() => setSheet(null)}
+          onDone={() => void q.refetch()}
+        />
+      ) : null}
     </div>
   );
 }
 
-function RepaySheet({ loan, onClose, onDone }: { loan: LoanDTO | null; onClose: () => void; onDone: () => void }) {
+const TITLES: Record<Action, string> = { supply: "Add collateral", withdraw: "Withdraw collateral", borrow: "Borrow USDC", repay: "Repay USDC" };
+
+function ActionSheet({
+  action,
+  reserve,
+  owner,
+  account,
+  usdc,
+  onClose,
+  onDone,
+}: {
+  action: Action;
+  reserve: LendingReserveDTO;
+  owner: string;
+  account: BorrowOverviewDTO["account"];
+  usdc: LendingReserveDTO | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const w = useWallet();
   const [amount, setAmount] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [step, setStep] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  if (!loan) return null;
+  const [done, setDone] = useState(false);
   const v = Number(amount);
+
+  const max =
+    action === "supply" ? reserve.walletBalance : action === "withdraw" ? reserve.supplied : action === "repay" ? Math.min(reserve.debt, reserve.walletBalance) : account?.borrowCapacityUsd ?? 0;
+
+  // Projected health factor for borrow/withdraw (approximation from account totals).
+  let projected: number | null = null;
+  if (account && (action === "borrow" || action === "withdraw") && v > 0) {
+    const cf = account.avgCollateralFactor ?? reserve.collateralFactor;
+    const coll = action === "withdraw" ? account.collateralUsd - v * (reserve.priceUsd ?? 0) : account.collateralUsd;
+    const debt = action === "borrow" ? account.debtUsd + v * (usdc?.priceUsd ?? 1) : account.debtUsd;
+    projected = debt > 0 ? (coll * cf) / debt : null;
+  }
+  const risky = projected !== null && projected < 1.25;
+
+  const record = async (a: "approve" | Action | "set_collateral", hash: string, amountAtomic: string | null) => {
+    await api("/api/borrow/actions", { method: "POST", json: { action: a, reserveId: reserve.reserveId, owner, txHash: hash, amountAtomic } }).catch(() => {});
+  };
+
+  const run = async () => {
+    setErr(null);
+    try {
+      const units = parseUnits(amount, reserve.decimals);
+      const call = (fn: string, args: unknown[]) => encodeFunctionData({ abi: spokeAbi, functionName: fn, args });
+      if (action === "supply" || action === "repay") {
+        setStep("Approve token in your wallet…");
+        const ap = await w.sendEvmTx({ chainIdHex: AAVE_CHAIN_HEX, to: reserve.underlying, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [AAVE_MAG7_SPOKE, units] }) });
+        await record("approve", ap.hash, units.toString());
+      }
+      setStep(`Confirm ${TITLES[action].toLowerCase()} in your wallet…`);
+      const tx = await w.sendEvmTx({ chainIdHex: AAVE_CHAIN_HEX, to: AAVE_MAG7_SPOKE, data: call(action, [BigInt(reserve.reserveId), units, owner]) });
+      await record(action, tx.hash, units.toString());
+      if (action === "supply" && !reserve.usingAsCollateral) {
+        setStep("Enable as collateral in your wallet…");
+        const c = await w.sendEvmTx({ chainIdHex: AAVE_CHAIN_HEX, to: AAVE_MAG7_SPOKE, data: call("setUsingAsCollateral", [BigInt(reserve.reserveId), true, owner]) });
+        await record("set_collateral", c.hash, null);
+      }
+      setStep(null);
+      setDone(true);
+      setTimeout(onDone, 4000);
+    } catch (e) {
+      setStep(null);
+      if (!(e instanceof WalletActionError && e.kind === "rejected")) setErr((e as Error).message);
+    }
+  };
+
+  const unit = action === "borrow" || action === "repay" ? "USDC" : reserve.symbol;
   return (
     <Sheet
-      open={Boolean(loan)}
+      open
       onClose={onClose}
-      title="Repay loan"
+      title={TITLES[action]}
       footer={
-        <Button
-          size="lg"
-          loading={busy}
-          disabled={!(v > 0)}
-          onClick={async () => {
-            setBusy(true);
-            setErr(null);
-            try {
-              await api(`/api/borrow/loans/${loan.id}/repay`, { method: "POST", json: { amountUsdt: v, simulated: true } });
-              setAmount("");
-              onClose();
-              onDone();
-            } catch (e) {
-              setErr((e as Error).message);
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          Confirm simulated repayment
-        </Button>
+        done ? (
+          <Button size="lg" onClick={onClose}>Done</Button>
+        ) : (
+          <Button size="lg" loading={Boolean(step)} disabled={!(v > 0) || v > max + 1e-9 || risky} onClick={run}>
+            {step ?? TITLES[action]}
+          </Button>
+        )
       }
     >
-      <div className="space-y-4">
-        <KV k="Outstanding" v={usdt(loan.outstanding)} strong />
-        <Field label="Repayment amount">
-          <Input inputMode="decimal" trail="USDT" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} />
-        </Field>
-        <Button variant="secondary" size="sm" onClick={() => setAmount((Math.ceil(loan.outstanding * 100) / 100).toFixed(2))}>
-          Repay in full
-        </Button>
-        <Notice tone="warn">Simulated — no USDT leaves your wallet.</Notice>
-        {err ? <Notice tone="error">{err}</Notice> : null}
-      </div>
+      {done ? (
+        <Notice tone="success" title="Submitted">
+          Your transaction was sent to Base. We verify it on-chain and it will show in Activity once confirmed.
+        </Notice>
+      ) : (
+        <div className="space-y-4">
+          <Field label={`Amount (${unit})`} hint={`Available: ${fmtNum(max, 4)} ${unit}`}>
+            <Input inputMode="decimal" placeholder="0" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} trail={unit} />
+          </Field>
+          <div className="flex gap-2">
+            {[0.25, 0.5, action === "borrow" ? 0.7 : 1].map((f) => (
+              <button key={f} onClick={() => setAmount((Math.floor(max * f * 10 ** Math.min(6, reserve.decimals)) / 10 ** Math.min(6, reserve.decimals)).toString())} className="h-9 flex-1 rounded-full bg-surface-2 text-[13px] font-medium text-fg-2">
+                {f === 1 ? "Max" : `${f * 100}%`}
+              </button>
+            ))}
+          </div>
+          {projected !== null ? (
+            <div className="rounded-[18px] bg-surface-2 px-4 py-1">
+              <KV k="Health factor after" v={<span className={risky ? "text-down" : "text-fg"}>{projected.toFixed(2)}</span>} strong />
+            </div>
+          ) : null}
+          {risky ? <Notice tone="error">This would put your position too close to liquidation (health factor below 1.25). Choose a smaller amount.</Notice> : null}
+          {action === "supply" ? <p className="text-xs text-fg-3">Three wallet confirmations: approve the token, supply it, then enable it as collateral.</p> : null}
+          {action === "repay" ? <p className="text-xs text-fg-3">Two confirmations: approve USDC, then repay. Interest keeps accruing until repaid.</p> : null}
+          {err ? <Notice tone="error">{err}</Notice> : null}
+        </div>
+      )}
     </Sheet>
   );
 }

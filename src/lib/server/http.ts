@@ -100,3 +100,13 @@ export function requireAdmin(req: Request, token: string | undefined) {
   for (let i = 0; i < token.length; i++) diff |= token.charCodeAt(i) ^ given.charCodeAt(i);
   if (diff !== 0) throw new AppError("UNAUTHORIZED", "Unauthorized.", 401);
 }
+
+/** Public origin of this deployment (APP_URL if set, else the request's forwarded host). */
+export function publicOrigin(req: Request): string {
+  const configured = process.env.APP_URL?.trim();
+  if (configured) return configured.replace(/\/$/, "");
+  const url = new URL(req.url);
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host;
+  const proto = req.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
+  return `${proto}://${host}`;
+}

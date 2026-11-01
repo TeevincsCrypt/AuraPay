@@ -39,10 +39,5 @@ export function paymentRails(): Record<PayCurrency, RailStatus> {
     return { available: true };
   })();
 
-  const demo: RailStatus =
-    config.simulatorsAllowed && sandbox
-      ? { available: true }
-      : { available: false, reason: config.simulatorsAllowed ? "Simulated payments only work with sandbox top-ups." : "Simulated payments are disabled in this mode." };
-
-  return { NIM: nim, USDT: usdt, DEMO: demo };
+  return { NIM: nim, USDT: usdt };
 }

@@ -1,5 +1,5 @@
 import "server-only";
-import { config } from "../config";
+import { config, testOverride } from "../config";
 import { log } from "../log";
 
 /**
@@ -19,8 +19,8 @@ import { log } from "../log";
 
 export type ReloadlyProduct = "airtime" | "utilities";
 
-// Test-only overrides (e.g. a local mock server). Ignored in production mode.
-const override = (name: string) => (config.isProduction ? undefined : process.env[name] || undefined);
+// Test-only overrides (local mock server); honoured only with AURAPAY_TEST_MODE=true.
+const override = testOverride;
 
 const AUTH_URL = override("RELOADLY_AUTH_URL_OVERRIDE") ?? "https://auth.reloadly.com/oauth/token";
 

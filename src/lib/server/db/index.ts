@@ -112,8 +112,8 @@ async function init(): Promise<DbState> {
     state = await createPostgres(config.databaseUrl);
     if (process.env.DB_AUTO_MIGRATE === "true") await migrate(state);
   } else {
-    if (config.appMode === "production" || config.appMode === "sandbox") {
-      throw new Error("DATABASE_URL is required in sandbox and production modes.");
+    if (!config.allowEmbeddedDb) {
+      throw new Error("DATABASE_URL is required in production.");
     }
     state = await createPglite(config.pgliteDir);
     await migrate(state);

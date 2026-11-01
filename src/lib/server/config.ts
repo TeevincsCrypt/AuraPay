@@ -1,15 +1,10 @@
 import "server-only";
-import { randomBytes } from "node:crypto";
 
 /**
- * Central runtime configuration.
- *
- * Every integration reports its *actual* availability from here. Nothing in the
- * app may silently fall back to simulated behaviour: simulated features are only
- * enabled by explicit mode rules below and are always labelled in the UI.
+ * Central runtime configuration. AuraPay runs real integrations only: there are no
+ * simulators and no demo data. Each integration reports its actual availability.
  */
 
-export type AppMode = "development" | "demo" | "sandbox" | "production";
 export type ReloadlyMode = "sandbox" | "production";
 export type NimiqNetwork = "mainnet" | "testnet";
 
@@ -35,58 +30,45 @@ function oneOf<T extends string>(name: string, allowed: readonly T[], fallback: 
   return (allowed as readonly string[]).includes(v ?? "") ? (v as T) : fallback;
 }
 
-const appMode = oneOf<AppMode>(
-  "APP_MODE",
-  ["development", "demo", "sandbox", "production"],
-  process.env.NODE_ENV === "production" ? "demo" : "development",
-);
+const isProdRuntime = process.env.NODE_ENV === "production";
+const nimiqNetwork = oneOf<NimiqNetwork>("NIMIQ_NETWORK", ["mainnet", "testnet"], "mainnet");
 
-let ephemeralSessionSecret: string | undefined;
+/**
+ * Local mock providers (scripts/mock-providers.mjs) are only honoured when
+ * AURAPAY_TEST_MODE=true, which is refused on Vercel production deployments.
+ */
+export const testMode = bool("AURAPAY_TEST_MODE") && process.env.VERCEL_ENV !== "production";
 
 export const config = {
-  appMode,
-  isProduction: appMode === "production",
-  /** Simulators (demo payments, paper investing, lending simulator) are never available in production. */
-  simulatorsAllowed: appMode === "development" || appMode === "demo",
+  isProdRuntime,
+  testMode,
 
-  sessionSecret(): string {
-    const s = env("SESSION_SECRET");
-    if (s && s.length >= 32) return s;
-    if (appMode === "production" || appMode === "sandbox") {
-      throw new Error("SESSION_SECRET (>= 32 chars) is required in sandbox and production modes.");
-    }
-    // Development/demo only: random per-process secret (sessions reset on restart).
-    ephemeralSessionSecret ??= randomBytes(32).toString("hex");
-    return ephemeralSessionSecret;
-  },
   sessionSecretConfigured: (env("SESSION_SECRET")?.length ?? 0) >= 32,
 
+  /** Public origin used in sign-in messages and Nimiq Pay deep links, e.g. https://aurapay.app */
+  appUrl: env("APP_URL"),
+
   databaseUrl: env("DATABASE_URL"),
-  /** Directory for the embedded PGlite fallback. Empty = in-memory. */
-  pgliteDir: env("PGLITE_DIR") === "memory" ? undefined : env("PGLITE_DIR") ?? (process.env.VERCEL ? undefined : ".data/pglite"),
+  /** Embedded PGlite is for local development only. */
+  pgliteDir: env("PGLITE_DIR") === "memory" ? undefined : env("PGLITE_DIR") ?? ".data/pglite",
+  allowEmbeddedDb: !isProdRuntime || testMode,
 
   adminToken: env("ADMIN_API_TOKEN"),
 
   reloadly: {
     clientId: env("RELOADLY_CLIENT_ID"),
     clientSecret: env("RELOADLY_CLIENT_SECRET"),
-    mode: oneOf<ReloadlyMode>("RELOADLY_MODE", ["sandbox", "production"], "sandbox"),
+    mode: oneOf<ReloadlyMode>("RELOADLY_MODE", ["sandbox", "production"], "production"),
     get configured() {
       return Boolean(this.clientId && this.clientSecret);
     },
   },
 
   nimiq: {
-    network: oneOf<NimiqNetwork>("NIMIQ_NETWORK", ["mainnet", "testnet"], "testnet"),
+    network: nimiqNetwork,
     merchantAddress: env("NIMIQ_MERCHANT_ADDRESS"),
-    /** JSON-RPC endpoint of a Nimiq Albatross node used to verify payments. */
-    rpcUrl:
-      env("NIMIQ_RPC_URL") ??
-      // The open server documented on nimiq.dev (testing/prototyping only). Testnet has no default.
-      (oneOf<NimiqNetwork>("NIMIQ_NETWORK", ["mainnet", "testnet"], "testnet") === "mainnet"
-        ? "https://rpc.nimiqwatch.com"
-        : undefined),
-    rpcAuth: env("NIMIQ_RPC_AUTH"), // optional "user:password" for a private node
+    rpcUrl: env("NIMIQ_RPC_URL") ?? (nimiqNetwork === "mainnet" ? "https://rpc.nimiqwatch.com" : undefined),
+    rpcAuth: env("NIMIQ_RPC_AUTH"),
     minConfirmations: int("NIMIQ_MIN_CONFIRMATIONS", 2),
   },
 
@@ -98,14 +80,21 @@ export const config = {
     minConfirmations: int("POLYGON_MIN_CONFIRMATIONS", 10),
   },
 
-  /** Allow real-value (mainnet) payments to fund sandbox/test top-ups. Off by default. */
+  /** RPC endpoints for chains where tokenised stocks and Aave V4 live. */
+  rpc: {
+    1: env("ETHEREUM_RPC_URL") ?? "https://ethereum-rpc.publicnode.com",
+    137: env("POLYGON_RPC_URL") ?? "https://polygon-bor-rpc.publicnode.com",
+    8453: env("BASE_RPC_URL") ?? "https://base-rpc.publicnode.com",
+    42161: env("ARBITRUM_RPC_URL") ?? "https://arbitrum-one-rpc.publicnode.com",
+  } as Record<number, string>,
+
+  /** Allow real-value payments to fund Reloadly SANDBOX (test) top-ups. Off by default. */
   allowRealPaymentsForSandbox: bool("ALLOW_REAL_PAYMENTS_FOR_SANDBOX"),
 
   pricing: {
-    serviceFeeBps: int("AURAPAY_SERVICE_FEE_BPS", 150), // 1.5%
+    serviceFeeBps: int("AURAPAY_SERVICE_FEE_BPS", 150),
     minServiceFeeUsd: Number(env("AURAPAY_MIN_SERVICE_FEE_USD") ?? "0.10"),
     quoteTtlSeconds: int("QUOTE_TTL_SECONDS", 600),
-    /** Extra headroom on NIM quotes to absorb price movement during the quote window. */
     nimSlippageBps: int("NIM_SLIPPAGE_BPS", 100),
   },
 
@@ -119,18 +108,25 @@ export const config = {
     twelveDataKey: env("TWELVEDATA_API_KEY"),
   },
 
-  brokerage: {
-    provider: env("BROKERAGE_PROVIDER"), // e.g. "alpaca" | "dinari" once contracted
-  },
-
-  lending: {
-    provider: env("LENDING_PROVIDER"),
-    simulatorApr: Number(env("SIM_LOAN_APR") ?? "0.12"),
-    maxLtv: Number(env("SIM_MAX_LTV") ?? "0.40"),
-    liquidationLtv: Number(env("SIM_LIQUIDATION_LTV") ?? "0.60"),
+  cow: {
+    /** Optional partner fee on stock purchases (CoW Protocol partner fee), in BPS. */
+    partnerFeeBps: int("COW_PARTNER_FEE_BPS", 0),
+    partnerFeeRecipient: env("COW_PARTNER_FEE_RECIPIENT"),
+    appCode: env("COW_APP_CODE") ?? "AuraPay",
   },
 } as const;
 
-export function reloadlyEnvironmentLabel(): "sandbox" | "production" {
-  return config.reloadly.mode;
+/** A test-only override URL, honoured only when AURAPAY_TEST_MODE is on. */
+export function testOverride(name: string): string | undefined {
+  return testMode ? env(name) : undefined;
+}
+
+/** HMAC/session secret. Required in production runtime. */
+export function sessionSecret(): string {
+  const s = env("SESSION_SECRET");
+  if (s && s.length >= 32) return s;
+  if (isProdRuntime && !testMode) throw new Error("SESSION_SECRET (>= 32 chars) is required in production.");
+  const g = globalThis as unknown as { __apDevSecret?: string };
+  g.__apDevSecret ??= crypto.randomUUID() + crypto.randomUUID();
+  return g.__apDevSecret;
 }
