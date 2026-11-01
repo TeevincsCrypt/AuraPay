@@ -274,6 +274,8 @@ const server = http.createServer(async (req, res) => {
     const sub = p.slice("/flw/v3".length);
     let m;
     if (sub === "/bill-categories") {
+      // FLW_CATALOG_DELAY_MS simulates Flutterwave's slow test-mode catalogue.
+      await new Promise((r) => setTimeout(r, Number(process.env.FLW_CATALOG_DELAY_MS ?? 0)));
       const cc = url.searchParams.get("country") ?? "NG";
       const cat = ["airtime", "data_bundle", "power"].find((k) => url.searchParams.get(k) === "1");
       const all = FLW_ITEMS[cc] ?? { airtime: [], data_bundle: [], power: [] };

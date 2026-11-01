@@ -114,7 +114,13 @@ export function PayFlow() {
     })();
   }, []);
 
-  const countryInfo = countriesQ.data?.countries.find((c) => c.code === country);
+  // Before the catalogue arrives, a picked country is shown with unknown (null) services.
+  const countryInfo =
+    countriesQ.data?.countries.find((c) => c.code === country) ??
+    (() => {
+      const t = TARGET_COUNTRIES.find((c) => c.code === country);
+      return t ? { ...t, services: null, error: null } : undefined;
+    })();
   const environment = countriesQ.data?.environment ?? (status?.utilities.state === "production" ? "production" : "sandbox");
 
   const reset = () => {
@@ -172,7 +178,7 @@ export function PayFlow() {
           onPick={(code) => {
             setCountry(code);
             const info = countriesQ.data?.countries.find((c) => c.code === code);
-            if (service && info?.services?.[service]) setStep("details");
+            if (service && (info?.services ? info.services[service] : true)) setStep("details");
             else setStep("service");
           }}
         />
@@ -306,10 +312,13 @@ function CountryStep({
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {(q.data?.countries ?? TARGET_COUNTRIES.map((c) => ({ ...c, services: null, error: null }))).map((c) => {
               const any = c.services && (c.services.airtime || c.services.data || c.services.electricity);
+              // Only a country the provider confirmed has nothing is disabled; unknown (still
+              // loading or slow) stays tappable and each service is checked on the next screens.
+              const confirmedEmpty = Boolean(c.services) && !any;
               return (
                 <button
                   key={c.code}
-                  disabled={!q.data || !any}
+                  disabled={confirmedEmpty}
                   onClick={() => onPick(c.code)}
                   className="flex items-center gap-3 rounded-xl border border-line bg-surface p-3.5 text-left transition-colors enabled:hover:border-line-strong enabled:hover:bg-surface-2 disabled:opacity-60"
                 >
@@ -324,11 +333,11 @@ function CountryStep({
                       ) : c.services ? (
                         <ServiceChips s={c.services} />
                       ) : (
-                        <span className="text-xs text-down">{c.error ?? "Unavailable"}</span>
+                        <span className="text-xs text-fg-3">{c.error ?? "Unavailable"}</span>
                       )}
                     </span>
                   </span>
-                  {any ? <ChevronRight className="size-4 text-fg-3" /> : null}
+                  {!confirmedEmpty ? <ChevronRight className="size-4 text-fg-3" /> : null}
                 </button>
               );
             })}
@@ -353,7 +362,8 @@ function ServiceStep({ country, onPick }: { country: CountriesResponse["countrie
       <div className="space-y-2">
         {(["airtime", "data", "electricity"] as UtilityService[]).map((s) => {
           const M = SERVICE_META[s];
-          const available = Boolean(country.services?.[s]);
+          // Unknown services (catalogue still loading/slow) are offered; the operator list confirms them.
+          const available = country.services ? Boolean(country.services[s]) : true;
           return (
             <button
               key={s}

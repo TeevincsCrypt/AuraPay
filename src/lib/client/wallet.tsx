@@ -130,7 +130,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       return;
     }
     try {
-      const luna = await nimiq.getBalance(address);
+      // The host may resolve with an error object instead of throwing.
+      const luna: unknown = await nimiq.getBalance(address);
+      if (typeof luna !== "number" || !Number.isFinite(luna)) throw new Error((luna as { error?: { message?: string } })?.error?.message ?? "No balance");
       setState((s) => ({ ...s, nimiq: { ...s.nimiq, balanceLuna: luna, balanceError: null } }));
     } catch {
       setState((s) => ({ ...s, nimiq: { ...s.nimiq, balanceLuna: null, balanceError: "Balance unavailable right now." } }));
@@ -151,7 +153,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     if (!nimiq) throw new WalletActionError("unsupported", "Open AuraPay inside Nimiq Pay to connect your wallet.");
     setState((s) => ({ ...s, nimiq: { ...s.nimiq, status: "connecting", error: null } }));
     try {
-      const addresses = await nimiq.listAccounts();
+      const res: unknown = await nimiq.listAccounts();
+      if (!Array.isArray(res)) throw new WalletActionError("failed", (res as { error?: { message?: string } })?.error?.message ?? "No account was shared.");
+      const addresses = res as string[];
       if (!addresses.length) throw new WalletActionError("failed", "No account was shared.");
       setState((s) => ({ ...s, nimiq: { ...s.nimiq, status: "connected", addresses, error: null } }));
       try {

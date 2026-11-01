@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "./api";
 import { useWallet } from "./wallet";
 
@@ -64,12 +64,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // Inside Nimiq Pay, a signed-in user's wallet is (re)connected automatically so
+  // balances show on every visit, not only right after signing in.
+  const autoConnected = useRef(false);
+  useEffect(() => {
+    if (!user || wallet.host !== "nimiq-pay" || wallet.nimiq.status !== "idle" || autoConnected.current) return;
+    autoConnected.current = true;
+    void wallet.connectNimiq().catch(() => {});
+  }, [user, wallet]);
+
   const signInHere = useCallback(async () => {
     const ch = await api<{ id: string; message: string }>("/api/auth/challenge", { method: "POST", json: { mode: "local" } });
     const signed = await wallet.signNimiq(ch.message);
     await api("/api/auth/verify", { method: "POST", json: { challengeId: ch.id, ...signed } });
-    // Share account addresses with the wallet layer for balances.
-    void wallet.connectNimiq().catch(() => {});
     await refresh();
   }, [wallet, refresh]);
 

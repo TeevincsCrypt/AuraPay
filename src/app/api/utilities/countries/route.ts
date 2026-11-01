@@ -6,6 +6,8 @@ import { ProviderError, requireUtilityProvider, toAppError } from "@/lib/server/
 
 export const dynamic = "force-dynamic";
 
+const COUNTRY_TIMEOUT_MS = 8_000;
+
 /** Target countries with the services the provider *actually* offers in each. */
 export const GET = handler(async (req) => {
   enforceRateLimit(req, "catalog", 60, 60);
@@ -14,14 +16,19 @@ export const GET = handler(async (req) => {
   const results = await Promise.all(
     TARGET_COUNTRIES.map(async (c) => {
       try {
-        return { ...c, services: await provider.countryServices(c.code), error: null as string | null };
+        // One slow country must not hold up the rest; it can still be opened and retried.
+        const services = await Promise.race([
+          provider.countryServices(c.code),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), COUNTRY_TIMEOUT_MS)),
+        ]);
+        return { ...c, services, error: null as string | null };
       } catch (err) {
         log.warn("catalog.country_failed", { country: c.code, error: errorMessage(err) });
         if (err instanceof ProviderError && err.code === "PROVIDER_AUTH_FAILED") throw err;
         return {
           ...c,
           services: null as CountryServices | null,
-          error: err instanceof ProviderError ? err.message : "Couldn't load services.",
+          error: err instanceof ProviderError ? err.message : errorMessage(err) === "timeout" ? "Provider is slow — tap to try" : "Couldn't load services.",
         };
       }
     }),

@@ -12,7 +12,7 @@ import { useApi, useStatus } from "@/lib/client/hooks";
 import { useSession } from "@/lib/client/session";
 import { useWallet } from "@/lib/client/wallet";
 import { countryByCode } from "@/lib/shared/countries";
-import { fmtUsd } from "@/lib/shared/format";
+import { fmtNum, fmtUsd } from "@/lib/shared/format";
 import type { ActivityItem, MarketStatus, PortfolioDTO, StockQuote } from "@/lib/shared/types";
 
 interface Beneficiary {
@@ -38,14 +38,18 @@ function Dashboard({ evm }: { evm: string | null }) {
   const beneficiariesQ = useApi<{ beneficiaries: Beneficiary[] }>("/api/beneficiaries");
   const marketsQ = useApi<{ source: string; market: MarketStatus; quotes: StockQuote[] }>("/api/markets/quotes");
 
+  const nimTestnet = w.hostNetwork === "testnet" || status?.nimiq.network === "testnet";
+  const nimAmount = w.nimiq.balanceLuna !== null ? w.nimiq.balanceLuna / 1e5 : null;
+
   // Total = NIM (USD) + USDT (Polygon) + stock tokens. Each part is real or shown as unavailable.
   const parts = useMemo(() => {
     const nimUsd = status?.rates.nimUsd;
-    const nim = w.nimiq.balanceLuna !== null && nimUsd ? (w.nimiq.balanceLuna / 1e5) * nimUsd : null;
+    // Testnet NIM has no value: show the amount, but keep it out of the USD total.
+    const nim = w.nimiq.balanceLuna !== null && nimUsd && !nimTestnet ? (w.nimiq.balanceLuna / 1e5) * nimUsd : null;
     const usdt = usdtQ.data?.balance ?? w.evm.usdtBalance ?? null;
     const stocks = portfolioQ.data?.portfolio.totals.valueUsd ?? null;
     return { nim, usdt, stocks };
-  }, [status, w.nimiq.balanceLuna, w.evm.usdtBalance, usdtQ.data, portfolioQ.data]);
+  }, [status, nimTestnet, w.nimiq.balanceLuna, w.evm.usdtBalance, usdtQ.data, portfolioQ.data]);
   const known = [parts.nim, parts.usdt, parts.stocks].filter((v): v is number => v !== null);
   const total = known.length ? known.reduce((s, v) => s + v, 0) : null;
   const loading = portfolioQ.loading && !portfolioQ.data;
@@ -63,7 +67,18 @@ function Dashboard({ evm }: { evm: string | null }) {
         )}
         <p className="mt-1 text-[15px] text-fg-2">Total balance</p>
         <div className="mt-3 flex flex-wrap justify-center gap-1.5 text-[12px] text-fg-2">
-          <span className="rounded-full bg-white/70 px-2.5 py-1">NIM {parts.nim !== null ? fmtUsd(parts.nim) : w.host === "nimiq-pay" ? "—" : "· open in Nimiq Pay"}</span>
+          {w.host === "nimiq-pay" && nimAmount === null ? (
+            <button
+              onClick={() => void (w.nimiq.status === "connected" ? w.refreshBalances() : w.connectNimiq().catch(() => {}))}
+              className="rounded-full bg-white/70 px-2.5 py-1 underline-offset-2 hover:underline"
+            >
+              NIM · {w.nimiq.status === "connecting" ? "connecting…" : w.nimiq.status === "connected" ? (w.nimiq.balanceError ? "tap to retry" : "loading…") : "tap to connect"}
+            </button>
+          ) : (
+            <span className="rounded-full bg-white/70 px-2.5 py-1">
+              NIM {nimAmount !== null ? `${fmtNum(nimAmount, 2)}${nimTestnet ? " · testnet" : parts.nim !== null ? ` · ${fmtUsd(parts.nim)}` : ""}` : "· open in Nimiq Pay"}
+            </span>
+          )}
           <span className="rounded-full bg-white/70 px-2.5 py-1">USDT {parts.usdt !== null ? fmtUsd(parts.usdt) : evm ? "—" : "· not linked"}</span>
           <span className="rounded-full bg-white/70 px-2.5 py-1">Stocks {parts.stocks !== null ? fmtUsd(parts.stocks) : "—"}</span>
         </div>
