@@ -296,19 +296,26 @@ const server = http.createServer(async (req, res) => {
         if (customer === "00000000") return flwOk(res, { response_code: "RR", response_message: "Invalid meter number", name: null, customer });
         return flwOk(res, { response_code: "00", address: null, response_message: "Successful", name: "ADEBAYO TEST", biller_code: item.biller_code, customer, product_code: item.item_code, email: null, fee: 100, maximum: 500000, minimum: 1000 });
       }
-      if (!/^\+\d{10,15}$/.test(customer)) return flwErr(res, 400, "Invalid customer");
+      // Like live Flutterwave: phone validation wants the national format (080…) and answers
+      // other formats with a 400 that has no top-level message.
+      if (!/^0\d{9,10}$/.test(customer)) return send(res, 400, { status: "error", data: { response_message: "Invalid customer number" } });
       return flwOk(res, { response_code: "00", response_message: "Successful", name: null, biller_code: item.biller_code, customer, product_code: item.item_code, fee: 0, maximum: 50000, minimum: 100 });
     }
     if ((m = sub.match(/^\/billers\/([^/]+)\/items\/([^/]+)\/payment$/)) && req.method === "POST") {
       const isPower = m[1] === "BIL113";
-      if (isPower) counters.payCalls++;
-      else counters.topupCalls++;
+      const count = () => (isPower ? counters.payCalls++ : counters.topupCalls++);
       if (failNextTopup) {
+        count();
         failNextTopup = null;
         return flwErr(res, 400, "Insufficient wallet balance");
       }
       if (!body.reference || !body.customer_id || !(body.amount > 0) || !body.country) return flwErr(res, 400, "Missing required field");
+      // FLW_PAY_NATIONAL_ONLY=1: reject +intl phone formats (exercises AuraPay's format fallback).
+      if (process.env.FLW_PAY_NATIONAL_ONLY === "1" && !isPower && !/^0\d+$/.test(body.customer_id)) {
+        return send(res, 400, { status: "error", message: "Invalid customer id" });
+      }
       if (flwBills.has(body.reference)) return flwErr(res, 400, "Duplicate reference");
+      count(); // accepted payments only
       customIds.set(body.reference, (customIds.get(body.reference) ?? 0) + 1);
       flwBills.set(body.reference, { body, created: Date.now(), billerCode: m[1], itemCode: m[2], isPower });
       return flwOk(res, {

@@ -1,5 +1,6 @@
 import "server-only";
 import type { BillerDTO, CountryServices, OperatorDTO, OperatorProduct } from "@/lib/shared/types";
+import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js";
 import { countryByCode } from "@/lib/shared/countries";
 import { config, testOverride } from "../config";
 import { AppError } from "../http";
@@ -81,15 +82,37 @@ async function flw<T>(method: "GET" | "POST", path: string, body?: unknown): Pro
       await sleep(600 * 2 ** attempt);
       continue;
     }
-    const json = (await res.json().catch(() => null)) as FlwResponse<T> | null;
+    const text = await res.text().catch(() => "");
+    let json: FlwResponse<T> | null = null;
+    try {
+      json = text ? (JSON.parse(text) as FlwResponse<T>) : null;
+    } catch {}
     if (!res.ok || !json || json.status !== "success") {
-      const msg = json?.message || `Flutterwave returned HTTP ${res.status}`;
-      log.warn("flutterwave.request_failed", { method, path: path.split("?")[0], status: res.status, message: msg });
+      const msg = flwMessage(json, text) || `Flutterwave returned HTTP ${res.status}`;
+      log.warn("flutterwave.request_failed", { method, path: path.split("?")[0], status: res.status, message: msg, body: text.slice(0, 300) });
       throw new FlwError(res.status, msg, !isRead && (res.status >= 500 || res.status === 0));
     }
     return json;
   }
   throw new FlwError(0, "Flutterwave is not responding. Please try again shortly.");
+}
+
+/** Flutterwave puts error text in different places depending on the endpoint. */
+function flwMessage(json: unknown, text: string): string {
+  const j = json as { message?: unknown; data?: { message?: unknown; response_message?: unknown } | null; error?: { message?: unknown } } | null;
+  const candidates = [j?.message, j?.data?.message, j?.data?.response_message, j?.error?.message];
+  const found = candidates.find((c) => typeof c === "string" && c.trim()) as string | undefined;
+  if (found) return found.trim().slice(0, 200);
+  // Plain-text or HTML error pages: keep a short, tag-free snippet.
+  const plain = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  return plain && plain.length < 200 ? plain : "";
+}
+
+/** Phone formats Flutterwave accepts vary by endpoint: national (080…), +234…, 234…. */
+function phoneFormats(e164Digits: string, cc: string): string[] {
+  const parsed = parsePhoneNumberFromString(`+${e164Digits}`, cc as CountryCode);
+  const national = parsed ? parsed.formatNational().replace(/[^\d]/g, "") : null;
+  return [...new Set([national, `+${e164Digits}`, e164Digits].filter((v): v is string => Boolean(v)))];
 }
 
 function toProviderError(err: unknown): never {
@@ -281,6 +304,23 @@ async function validateCustomer(billerCode: string, itemCode: string, customer: 
   }
 }
 
+/**
+ * Phone check for airtime. The number is already validated locally (libphonenumber), so a
+ * provider-side validation problem is not fatal: we try each accepted format and otherwise
+ * proceed without provider limits.
+ */
+async function validatePhone(billerCode: string, itemCode: string, e164Digits: string, cc: string): Promise<ValidateData> {
+  for (const customer of phoneFormats(e164Digits, cc)) {
+    try {
+      return await validateCustomer(billerCode, itemCode, customer);
+    } catch (err) {
+      if (!(err instanceof AppError)) throw err;
+      log.warn("flutterwave.phone_validate_failed", { billerCode, itemCode, format: customer.startsWith("+") ? "+intl" : customer.startsWith("0") ? "national" : "intl", message: err.message });
+    }
+  }
+  return {};
+}
+
 function splitCode(code: string): [string, string] {
   const [biller, item] = code.split(":");
   if (!biller || !item) throw new AppError("OPERATOR_NOT_FOUND", "Provider not found.", 404);
@@ -298,7 +338,7 @@ async function price(input: PriceInput): Promise<Priced> {
     if (input.amountCurrency !== "local") throw new AppError("INVALID_AMOUNT_CURRENCY", `Enter the amount in ${currency}.`, 422);
     const recipient = normalisePhone(input.recipient, cc);
     const [biller, item] = splitCode(op.code);
-    const v = await validateCustomer(biller, item, `+${recipient}`);
+    const v = await validatePhone(biller, item, recipient, cc);
     if (v.minimum && input.amount < v.minimum) throw new AppError("AMOUNT_TOO_LOW", `Minimum is ${v.minimum} ${currency}.`, 422);
     if (v.maximum && input.amount > v.maximum) throw new AppError("AMOUNT_TOO_HIGH", `Maximum is ${v.maximum} ${currency}.`, 422);
     const cost = roundUpCents(await usdFor(input.amount + Number(v.fee ?? 0), currency));
@@ -398,12 +438,29 @@ export function flutterwaveProvider(): UtilityProvider {
       const [billerCode, itemCode] = order.service === "electricity" ? splitCode(order.operatorCode) : [order.operatorCode.split(":")[0], order.itemCode ?? order.operatorCode.split(":")[1]];
       if (!billerCode || !itemCode) throw new ProviderError("PROVIDER_ERROR", "Order is missing provider codes.", 500);
       try {
-        const r = await flw<PayData>("POST", `/billers/${encodeURIComponent(billerCode)}/items/${encodeURIComponent(itemCode)}/payment`, {
-          country: order.countryCode,
-          customer_id: order.service === "electricity" ? order.recipient : `+${order.recipient}`,
-          amount: order.amountLocal,
-          reference: order.ref,
-        });
+        const pay = (customerId: string) =>
+          flw<PayData>("POST", `/billers/${encodeURIComponent(billerCode)}/items/${encodeURIComponent(itemCode)}/payment`, {
+            country: order.countryCode,
+            customer_id: customerId,
+            amount: order.amountLocal,
+            reference: order.ref,
+          });
+        let r: FlwResponse<PayData> | null = null;
+        if (order.service === "electricity") r = await pay(order.recipient);
+        else {
+          const formats = [`+${order.recipient}`, ...phoneFormats(order.recipient, order.countryCode).filter((f) => f !== `+${order.recipient}`)];
+          for (let i = 0; i < formats.length && !r; i++) {
+            try {
+              r = await pay(formats[i]);
+            } catch (err) {
+              // Only a definite 4xx about the customer is retried with the next format: nothing was charged.
+              const retryable = err instanceof FlwError && err.status >= 400 && err.status < 500 && !err.outcomeUnknown && !/duplicate|already|insufficient|balance/i.test(err.message);
+              if (!retryable || i === formats.length - 1) throw err;
+              log.warn("flutterwave.pay_format_retry", { ref: order.ref, status: err.status, message: err.message });
+            }
+          }
+        }
+        if (!r) throw new FlwError(0, "No response from Flutterwave.");
         const d = r.data;
         const next = statusOf(d?.status) ?? "successful";
         return {
