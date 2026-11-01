@@ -132,6 +132,7 @@ function billerFx(b: RawBiller): number | null {
 
 export function normaliseBiller(b: RawBiller): BillerDTO {
   return {
+    products: [],
     code: String(b.id),
     name: b.name,
     countryCode: (b.countryIsoCode ?? b.countryCode ?? "").toUpperCase(),
@@ -218,6 +219,9 @@ export async function countryServices(countryCode: string): Promise<CountryServi
     airtime: ops.some(isAirtimeOperator),
     data: ops.some(isDataOperator),
     electricity: billers.length > 0,
+    // Reloadly's utility API covers electricity only.
+    cable: false,
+    internet: false,
     operatorCount: ops.length,
     billerCount: billers.length,
   };

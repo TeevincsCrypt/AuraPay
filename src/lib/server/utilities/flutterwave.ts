@@ -135,7 +135,7 @@ function toProviderError(err: unknown): never {
 // Catalogue (cached 10 minutes per country/category)
 // ---------------------------------------------------------------------------
 
-type Category = "airtime" | "data_bundle" | "power";
+type Category = "airtime" | "data_bundle" | "power" | "cable" | "internet";
 const g = globalThis as unknown as { __flwCache?: Map<string, { at: number; value: unknown }> };
 const cache = (g.__flwCache ??= new Map());
 
@@ -260,6 +260,7 @@ async function powerBillers(cc: string): Promise<BillerDTO[]> {
   const list = await items(cc, "power");
   const fx = await fxPerUsd(currencyOf(cc));
   return list.map((i) => ({
+    products: [],
     code: `${i.biller_code}:${i.item_code}`,
     name: i.name || i.biller_name || i.biller_code,
     countryCode: cc,
@@ -297,6 +298,46 @@ function emptyOperator(cc: string): OperatorDTO {
     products: [],
     suggestedAmounts: [],
   };
+}
+
+/** The provider name shared by a group of packages (e.g. "DSTV" for "DStv Padi", "DStv Compact"). */
+function groupName(group: FlwItem[], fallback: string): string {
+  const names = [...new Set(group.map((i) => (i.biller_name || "").trim()).filter(Boolean))];
+  if (names.length === 1) return names[0];
+  const first = (group[0].biller_name || group[0].short_name || group[0].name || fallback).trim().split(/\s+/)[0];
+  return first || fallback;
+}
+
+/** Cable TV / internet: billers (by biller code) with their fixed-price packages. */
+async function packageBillers(cc: string, category: "cable" | "internet"): Promise<BillerDTO[]> {
+  const list = (await items(cc, category)).filter((i) => Number(i.amount) > 0);
+  const fx = await fxPerUsd(currencyOf(cc));
+  const groups = new Map<string, FlwItem[]>();
+  for (const i of list) groups.set(i.biller_code, [...(groups.get(i.biller_code) ?? []), i]);
+  return [...groups.entries()].map(([billerCode, group]) => ({
+    code: billerCode,
+    name: groupName(group, billerCode),
+    countryCode: cc,
+    type: category === "cable" ? "CABLE_TV" : "INTERNET",
+    serviceType: "PREPAID",
+    localCurrency: currencyOf(cc),
+    localAmountSupported: true,
+    minLocalAmount: null,
+    maxLocalAmount: null,
+    localFee: group[0].fee ? Number(group[0].fee) : null,
+    senderCurrency: "USD",
+    minSenderAmount: null,
+    maxSenderAmount: null,
+    fxRate: fx,
+    products: group
+      .sort((a, b) => Number(a.amount) - Number(b.amount))
+      .map((i) => ({
+        code: i.item_code,
+        localAmount: Number(i.amount),
+        senderAmount: fx ? roundUpCents(Number(i.amount) / fx) : 0,
+        description: `${i.name}${i.validity_period ? ` · ${i.validity_period} days` : ""}`,
+      })),
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +423,34 @@ async function price(input: PriceInput): Promise<Priced> {
     return { operatorName: op.name, operatorCode: op.code, itemCode: product.code, productDescription: product.description, amountLocal: product.localAmount, localCurrency: currency, amountSender: cost, senderCurrency: "USD", useLocalAmount: true, providerCostUsd: cost, recipient };
   }
 
+  if (input.service === "cable" || input.service === "internet") {
+    const biller = (await packageBillers(cc, input.service)).find((b) => b.code === input.operatorCode);
+    const product = biller?.products.find((p) => p.code === input.productCode);
+    if (!biller || !product || product.localAmount === null) throw new AppError("INVALID_PRODUCT", "Select one of the available packages.", 422);
+    const account = input.recipient.replace(/[\s-]/g, "");
+    if (!/^[0-9A-Za-z]{5,24}$/.test(account)) {
+      throw new AppError("INVALID_ACCOUNT", input.service === "cable" ? "Enter a valid smartcard / IUC number." : "Enter a valid account number.", 422);
+    }
+    // The account is checked with the provider; the customer name is shown so the user can confirm.
+    const v = await validateCustomer(biller.code, product.code, account);
+    const fee = Number(v.fee ?? biller.localFee ?? 0);
+    const cost = roundUpCents(await usdFor(product.localAmount + fee, currency));
+    const customerName = v.name && v.name.trim() ? v.name.trim() : null;
+    return {
+      operatorName: biller.name,
+      operatorCode: biller.code,
+      itemCode: product.code,
+      productDescription: `${product.description ?? "Package"}${customerName ? ` · ${customerName}` : ""}${fee ? ` · incl. fee ${fee} ${currency}` : ""}`,
+      amountLocal: product.localAmount,
+      localCurrency: currency,
+      amountSender: cost,
+      senderCurrency: "USD",
+      useLocalAmount: true,
+      providerCostUsd: cost,
+      recipient: account,
+    };
+  }
+
   // Electricity
   const biller = (await powerBillers(cc)).find((b) => b.code === input.operatorCode);
   if (!biller) throw new AppError("BILLER_NOT_FOUND", "Electricity provider not found.", 404);
@@ -448,9 +517,27 @@ export function flutterwaveProvider(): UtilityProvider {
 
     async countryServices(cc: string): Promise<CountryServices> {
       try {
-        const [a, d, p] = await Promise.all([items(cc, "airtime"), items(cc, "data_bundle"), items(cc, "power")]);
+        // Cable/internet failures don't hide the core services.
+        const [a, d, p, tv, net] = await Promise.all([
+          items(cc, "airtime"),
+          items(cc, "data_bundle"),
+          items(cc, "power"),
+          items(cc, "cable").catch(() => [] as FlwItem[]),
+          items(cc, "internet").catch(() => [] as FlwItem[]),
+        ]);
         const dataCount = d.filter((i) => Number(i.amount) > 0).length;
-        return { countryCode: cc, airtime: a.length > 0, data: dataCount > 0, electricity: p.length > 0, operatorCount: a.length + dataCount, billerCount: p.length };
+        const tvCount = tv.filter((i) => Number(i.amount) > 0).length;
+        const netCount = net.filter((i) => Number(i.amount) > 0).length;
+        return {
+          countryCode: cc,
+          airtime: a.length > 0,
+          data: dataCount > 0,
+          electricity: p.length > 0,
+          cable: tvCount > 0,
+          internet: netCount > 0,
+          operatorCount: a.length + dataCount,
+          billerCount: p.length + tvCount + netCount,
+        };
       } catch (err) {
         return toProviderError(err);
       }
@@ -466,7 +553,7 @@ export function flutterwaveProvider(): UtilityProvider {
       const match = airtime.find((o) => networkFromName(o.name) === net);
       return match ?? { ...emptyOperator(cc), code: "", name: net };
     },
-    billers: (cc) => powerBillers(cc).catch(toProviderError),
+    billers: (cc, service) => (service === "electricity" ? powerBillers(cc) : packageBillers(cc, service)).catch(toProviderError),
     price: (input) => price(input).catch(toProviderError),
 
     async submit(order: ProviderOrder): Promise<ProviderOutcome> {
@@ -481,7 +568,8 @@ export function flutterwaveProvider(): UtilityProvider {
             reference: order.ref,
           });
         let r: FlwResponse<PayData> | null = null;
-        if (order.service === "electricity") r = await pay(order.recipient);
+        // Meter / smartcard / account numbers are sent as entered; phone numbers try accepted formats.
+        if (order.service === "electricity" || order.service === "cable" || order.service === "internet") r = await pay(order.recipient);
         else {
           const formats = [`+${order.recipient}`, ...phoneFormats(order.recipient, order.countryCode).filter((f) => f !== `+${order.recipient}`)];
           for (let i = 0; i < formats.length && !r; i++) {

@@ -54,7 +54,7 @@ function activityStatus(s: UtilityOrderStatus): ActivityStatus {
   }
 }
 
-const SERVICE_LABEL: Record<UtilityService, string> = { airtime: "Airtime", data: "Mobile data", electricity: "Electricity" };
+export const SERVICE_LABEL: Record<UtilityService, string> = { airtime: "Airtime", data: "Mobile data", electricity: "Electricity", cable: "Cable TV", internet: "Internet" };
 
 // ---------------------------------------------------------------------------
 // Mapping
@@ -249,7 +249,7 @@ export async function createUtilityOrder(userId: string, input: CreateOrderInput
       status: "pending",
       isSimulated: false,
       environment,
-      provider: "reloadly",
+      provider: provider.id,
       sourceTable: "utility_orders",
       sourceId: row.id,
       details: {
@@ -335,7 +335,8 @@ export async function submitPayment(userId: string, orderId: string, txHashRaw: 
   return advanceOrder(userId, orderId);
 }
 
-async function verifyPayment(order: OrderRow, txHash: string): Promise<VerifyResult> {
+/** Verifies an incoming payment for any row with the quote columns (orders and schedules). */
+export async function verifyPayment(order: Record<string, unknown>, txHash: string): Promise<VerifyResult> {
   const notBefore = new Date(new Date(order.created_at as string).getTime() - 2 * 60_000);
   if (order.pay_currency === "NIM") {
     return verifyNimiqTransfer({
@@ -470,6 +471,19 @@ async function pollProvider(db: Db, order: OrderRow): Promise<OrderRow> {
     log.warn("utility_order.poll_failed", { ref: order.ref, error: errorMessage(err) });
     return order;
   }
+}
+
+/**
+ * Drives an already-paid order (e.g. a scheduled run) without a user context:
+ * fulfils it if paid, or polls the provider if pending. Exactly-once via `fulfil`'s claim.
+ */
+export async function processOrder(orderId: string): Promise<UtilityOrderStatus | null> {
+  const db = await getDb();
+  let order = (await db.query<OrderRow>("select * from utility_orders where id = $1", [orderId]))[0];
+  if (!order) return null;
+  if (order.status === "paid") order = await fulfil(db, order);
+  if (order.status === "provider_pending") order = await pollProvider(db, order);
+  return order.status;
 }
 
 // ---------------------------------------------------------------------------

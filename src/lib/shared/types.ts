@@ -1,7 +1,12 @@
 /** Types shared between API routes and the client. No secrets live here. */
 
 export type PayCurrency = "NIM" | "USDT";
-export type UtilityService = "airtime" | "data" | "electricity";
+export type UtilityService = "airtime" | "data" | "electricity" | "cable" | "internet";
+/** Services paid to an account/meter/smartcard number (not a phone number). */
+export const ACCOUNT_SERVICES: readonly UtilityService[] = ["electricity", "cable", "internet"];
+/** Services sold as fixed-price packages/bundles. */
+export const BUNDLE_SERVICES: readonly UtilityService[] = ["data", "cable", "internet"];
+export type BillerService = "electricity" | "cable" | "internet";
 
 export type ActivityStatus = "pending" | "processing" | "successful" | "failed" | "refunded" | "requires_review";
 
@@ -48,6 +53,8 @@ export interface CountryServices {
   airtime: boolean;
   data: boolean;
   electricity: boolean;
+  cable: boolean;
+  internet: boolean;
   operatorCount: number;
   billerCount: number;
 }
@@ -99,6 +106,8 @@ export interface BillerDTO {
   minSenderAmount: number | null;
   maxSenderAmount: number | null;
   fxRate: number | null;
+  /** Packages for cable TV / internet billers (empty for electricity). */
+  products: OperatorProduct[];
 }
 
 export interface QuoteBreakdown {
@@ -156,7 +165,8 @@ export type ActivityCategory =
   | "collateral_deposit"
   | "collateral_withdrawal"
   | "wallet_payment"
-  | "refund";
+  | "refund"
+  | "bill_schedule";
 
 export interface ActivityItem {
   id: string;
@@ -307,4 +317,49 @@ export interface BorrowOverviewDTO {
     riskPremiumBps: number | null;
     borrowCapacityUsd: number;
   } | null;
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled bills (prepaid; paid out automatically at each run time)
+// ---------------------------------------------------------------------------
+
+export type ScheduleFrequency = "once" | "weekly" | "monthly";
+export type ScheduleStatus = "quoted" | "payment_pending" | "active" | "completed" | "cancelled" | "expired" | "requires_review" | "refunded";
+
+export interface ScheduleRunDTO {
+  run: number;
+  orderId: string;
+  ref: string;
+  status: UtilityOrderStatus;
+  createdAt: string;
+}
+
+export interface BillScheduleDTO {
+  id: string;
+  ref: string;
+  environment: "sandbox" | "production";
+  service: UtilityService;
+  countryCode: string;
+  operatorName: string;
+  recipient: string;
+  recipientLabel: string | null;
+  productDescription: string | null;
+  amountLocal: number | null;
+  localCurrency: string | null;
+  frequency: ScheduleFrequency;
+  totalRuns: number;
+  runsDone: number;
+  startAt: string;
+  nextRunAt: string | null;
+  perRunUsd: number;
+  quote: QuoteBreakdown;
+  payToAddress: string | null;
+  payerAddress: string | null;
+  memo: string | null;
+  status: ScheduleStatus;
+  statusReason: string | null;
+  refundDue: boolean;
+  paymentTxHash: string | null;
+  runs: ScheduleRunDTO[];
+  createdAt: string;
 }

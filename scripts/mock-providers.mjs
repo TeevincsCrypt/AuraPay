@@ -95,6 +95,14 @@ const FLW_ITEMS = {
       { id: 12, biller_code: "BIL110", name: "AIRTEL 40 MB Data", country: "NG", is_airtime: false, biller_name: "AIRTEL 40 MB Data", item_code: "MD301", short_name: "AIRTEL 40MB", fee: 0, label_name: "Mobile Number", amount: 50, validity_period: 1 },
       { id: 11, biller_code: "BIL108", name: "3GB", country: "NG", is_airtime: false, biller_name: "MTN 3GB DATA", item_code: "MD138", short_name: "MTN 3GB", fee: 0, label_name: "Mobile Number", amount: 2000, validity_period: 30 },
     ],
+    cable: [
+      { id: 40, biller_code: "BIL121", name: "DStv Padi", country: "NG", is_airtime: false, biller_name: "DSTV", item_code: "CB141", short_name: "DStv Padi", fee: 0, label_name: "SmartCard Number", amount: 4400, validity_period: 30 },
+      { id: 41, biller_code: "BIL121", name: "DStv Compact", country: "NG", is_airtime: false, biller_name: "DSTV", item_code: "CB177", short_name: "DStv Compact", fee: 0, label_name: "SmartCard Number", amount: 19000, validity_period: 30 },
+      { id: 42, biller_code: "BIL122", name: "GOtv Jolli", country: "NG", is_airtime: false, biller_name: "GOTV", item_code: "CB144", short_name: "GOtv Jolli", fee: 0, label_name: "IUC Number", amount: 4850, validity_period: 30 },
+    ],
+    internet: [
+      { id: 50, biller_code: "BIL124", name: "Spectranet 10GB", country: "NG", is_airtime: false, biller_name: "SPECTRANET", item_code: "IN201", short_name: "Spectranet 10GB", fee: 0, label_name: "Account Number", amount: 7000, validity_period: 30 },
+    ],
     power: [
       { id: 20, biller_code: "BIL113", name: "IKEDC  PREPAID", country: "NG", is_airtime: false, biller_name: "IKEDC  PREPAID", item_code: "UB157", short_name: "IKEDC PREPAID", fee: 100, label_name: "Meter Number", amount: 0 },
     ],
@@ -103,6 +111,8 @@ const FLW_ITEMS = {
     airtime: [{ id: 30, biller_code: "BIL132", name: "MTN Ghana", country: "GH", is_airtime: true, biller_name: "AIRTIME", item_code: "AT132", short_name: "MTN GH", fee: 0, label_name: "Mobile Number", amount: 0 }],
     data_bundle: [],
     power: [],
+    cable: [],
+    internet: [],
   },
 };
 const flwBills = new Map(); // reference -> { body, created, billerCode, itemCode }
@@ -278,9 +288,10 @@ const server = http.createServer(async (req, res) => {
       // FLW_CATALOG_DELAY_MS simulates Flutterwave's slow test-mode catalogue.
       await new Promise((r) => setTimeout(r, Number(process.env.FLW_CATALOG_DELAY_MS ?? 0)));
       const cc = url.searchParams.get("country") ?? "NG";
-      const cat = ["airtime", "data_bundle", "power"].find((k) => url.searchParams.get(k) === "1");
-      const all = FLW_ITEMS[cc] ?? { airtime: [], data_bundle: [], power: [] };
-      return flwOk(res, cat ? all[cat] : [...all.airtime, ...all.data_bundle, ...all.power], "Bill categories retrieved");
+      const cats = ["airtime", "data_bundle", "power", "cable", "internet"];
+      const cat = cats.find((k) => url.searchParams.get(k) === "1");
+      const all = FLW_ITEMS[cc] ?? { airtime: [], data_bundle: [], power: [], cable: [], internet: [] };
+      return flwOk(res, cat ? all[cat] ?? [] : cats.flatMap((k) => all[k] ?? []), "Bill categories retrieved");
     }
     if (sub === "/transfers/rates") {
       const amount = Number(url.searchParams.get("amount"));
@@ -291,8 +302,12 @@ const server = http.createServer(async (req, res) => {
     }
     if ((m = sub.match(/^\/bill-items\/([^/]+)\/validate$/))) {
       const customer = url.searchParams.get("customer") ?? "";
-      const item = Object.values(FLW_ITEMS).flatMap((c) => [...c.airtime, ...c.data_bundle, ...c.power]).find((i) => i.item_code === m[1] && i.biller_code === url.searchParams.get("code"));
+      const item = Object.values(FLW_ITEMS).flatMap((c) => Object.values(c).flat()).find((i) => i.item_code === m[1] && i.biller_code === url.searchParams.get("code"));
       if (!item) return flwErr(res, 400, "Invalid biller code");
+      if (["SmartCard Number", "IUC Number", "Account Number"].includes(item.label_name)) {
+        if (customer === "00000000") return flwOk(res, { response_code: "RR", response_message: "Invalid smartcard number", name: null, customer });
+        return flwOk(res, { response_code: "00", response_message: "Successful", name: "CHIOMA OKAFOR", biller_code: item.biller_code, customer, product_code: item.item_code, fee: 0, maximum: 0, minimum: 0 });
+      }
       if (item.label_name === "Meter Number") {
         if (customer === "00000000") return flwOk(res, { response_code: "RR", response_message: "Invalid meter number", name: null, customer });
         return flwOk(res, { response_code: "00", address: null, response_message: "Successful", name: "ADEBAYO TEST", biller_code: item.biller_code, customer, product_code: item.item_code, email: null, fee: 100, maximum: 500000, minimum: 1000 });
@@ -312,7 +327,8 @@ const server = http.createServer(async (req, res) => {
       }
       if (!body.reference || !body.customer_id || !(body.amount > 0) || !body.country) return flwErr(res, 400, "Missing required field");
       // FLW_PAY_NATIONAL_ONLY=1: reject +intl phone formats (exercises AuraPay's format fallback).
-      if (process.env.FLW_PAY_NATIONAL_ONLY === "1" && !isPower && !/^0\d+$/.test(body.customer_id)) {
+      const isPhoneBill = ["BIL099", "BIL102", "BIL108", "BIL110", "BIL132"].includes(m[1]);
+      if (process.env.FLW_PAY_NATIONAL_ONLY === "1" && isPhoneBill && !/^0\d+$/.test(body.customer_id)) {
         return send(res, 400, { status: "error", message: "Invalid customer id" });
       }
       if (flwBills.has(body.reference)) return flwErr(res, 400, "Duplicate reference");

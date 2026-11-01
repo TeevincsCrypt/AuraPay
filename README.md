@@ -4,7 +4,7 @@
 
 AuraPay is a Nimiq Pay Mini App for African users:
 
-1. **Pay**: airtime, mobile data and electricity in Nigeria, Ghana, Kenya, Uganda, South Africa and Tanzania, paid with **NIM** or **USDT** (fulfilled by Flutterwave Bills; Reloadly also supported).
+1. **Pay**: airtime, mobile data and electricity in Nigeria, Ghana, Kenya, Uganda, South Africa and Tanzania, paid with **NIM** or **USDT** (fulfilled by Flutterwave Bills; Reloadly also supported). Also **cable TV** (DStv, GOtv, StarTimes) and **internet** plans, and **scheduled bills**: prepay once, and AuraPay pays the bill automatically at the date and time you set, once or every week or month.
 2. **Invest**: tokenised US stocks (NVIDIA, Apple, Microsoft, Tesla, Amazon, Alphabet, Meta, AMD, Netflix, Coinbase), bought through CoW Protocol and held in your own wallet.
 3. **Borrow**: USDC against your stock tokens through Aave V4 on Base, without selling them.
 
@@ -77,7 +77,7 @@ AURAPAY_TEST_MODE=true RELOADLY_CLIENT_ID=mock-client RELOADLY_CLIENT_SECRET=moc
   EVM_RPC_URL_OVERRIDE=http://localhost:4010/evm COW_API_URL_OVERRIDE=http://localhost:4010/cow npm start &
 # Runs against whichever utility provider is configured. For Flutterwave, replace the RELOADLY_* vars with
 #   FLUTTERWAVE_SECRET_KEY=FLWSECK_TEST-mock-X FLUTTERWAVE_URL_OVERRIDE=http://localhost:4010/flw
-npm run test:api   # 35 tests: sign-in (local, remote, tampering, replay), EVM linking, NIM/USDT verification,
+npm run test:api   # 46 tests: sign-in (local, remote, tampering, replay), EVM linking, NIM/USDT verification,
                    # idempotency, exactly-once fulfilment, refunds, isolation, holdings, CoW orders, Aave
 npm run test:ui    # Playwright: landing, QR sign-in, simulated Nimiq Pay host with real signatures,
                    # every page at mobile + desktop, keypad + slide-to-pay purchase, borrow, buy sheet

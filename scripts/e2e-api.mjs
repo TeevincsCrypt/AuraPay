@@ -334,6 +334,111 @@ await test("meter is verified with the provider before quoting", async () => {
   else assert(r.status === 201 || r.status === 422, `status ${r.status}`);
 });
 
+console.log("\nCable TV & internet");
+await test("cable billers list packages; smartcard checked; package delivered", async () => {
+  const r = await c.get("/api/utilities/billers?country=NG&service=cable");
+  if (PROVIDER !== "flutterwave") return eq(r.json.billers.length, 0, "reloadly has no cable");
+  const dstv = r.json.billers.find((b) => b.name === "DSTV");
+  eq(dstv?.products.length, 2, "DStv packages");
+  eq(r.json.billers.length, 2, "DStv + GOtv");
+  const bad = await c.post("/api/orders", { clientRequestId: randomUUID(), service: "cable", countryCode: "NG", operatorCode: "BIL121", productCode: "CB141", recipient: "00000000", amount: 1, amountCurrency: "sender", payCurrency: "NIM" });
+  eq(bad.json.error?.code, "CUSTOMER_INVALID", "invalid smartcard");
+  const o = await createOrder(c, { service: "cable", operatorCode: "BIL121", productCode: "CB141", recipient: "7027914329", amount: 1, amountCurrency: "sender" });
+  eq(o.amountLocal, 4400, "package price");
+  assert(o.productDescription.includes("CHIOMA OKAFOR"), "customer name shown");
+  eq((await payNim(c, o)).status, "successful", "status");
+});
+await test("internet plan purchase", async () => {
+  if (PROVIDER !== "flutterwave") return;
+  const r = await c.get("/api/utilities/billers?country=NG&service=internet");
+  eq(r.json.billers[0]?.name, "SPECTRANET", "biller");
+  const o = await createOrder(c, { service: "internet", operatorCode: "BIL124", productCode: "IN201", recipient: "SPC123456", amount: 1, amountCurrency: "sender" });
+  eq((await payNim(c, o)).status, "successful", "status");
+});
+await test("countries report cable and internet", async () => {
+  const ng = (await c.get("/api/utilities/countries")).json.countries.find((x) => x.code === "NG");
+  eq(ng.services.cable, PROVIDER === "flutterwave", "cable");
+  eq(ng.services.internet, PROVIDER === "flutterwave", "internet");
+});
+
+console.log("\nScheduled bills (prepaid, run automatically)");
+const CRON = process.env.CRON_SECRET ?? "test-cron-secret-123";
+const cron = (secret = CRON) => fetch(APP + "/api/cron/schedules", { headers: secret ? { authorization: `Bearer ${secret}` } : {} }).then(async (r) => ({ status: r.status, json: await r.json() }));
+const newSchedule = async (overrides = {}) => {
+  const r = await c.post("/api/schedules", {
+    clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorCode: CODES.airtime, recipient: "08031234567",
+    amount: 1000, amountCurrency: "local", payCurrency: "NIM", frequency: "weekly", totalRuns: 3, startAt: new Date().toISOString(), ...overrides,
+  });
+  assert(r.status === 201, `create schedule ${r.status} ${JSON.stringify(r.json)}`);
+  return r.json.schedule;
+};
+let sched;
+await test("schedule is priced for every run and paid once", async () => {
+  sched = await newSchedule();
+  eq(sched.status, "quoted", "status");
+  eq(sched.totalRuns, 3, "runs");
+  eq(sched.perRunUsd, 0.77, "per run");
+  eq(sched.quote.totalUsd, 2.31, "total = 3 × per run");
+  eq(sched.memo, `AuraPay ${sched.ref}`, "memo");
+});
+await test("verified payment activates it; a 'now' start runs the first payment immediately", async () => {
+  const before = await mock("/_test/counters");
+  const hash = await registerNimTx(sched);
+  const r = await c.post(`/api/schedules/${sched.id}/payment`, { txHash: hash });
+  eq(r.json.schedule.status, "active", "active");
+  eq(r.json.schedule.runsDone, 1, "first run done");
+  eq(r.json.schedule.runs[0]?.status, "successful", "run 1 delivered");
+  assert(new Date(r.json.schedule.nextRunAt) - Date.now() > 6 * 86_400_000, "next run a week later");
+  eq((await mock("/_test/counters")).topupCalls - before.topupCalls, 1, "one top-up");
+  const activity = (await c.get("/api/activity?limit=20")).json.items;
+  assert(activity.some((i) => i.category === "bill_schedule"), "schedule in activity");
+});
+await test("runner needs CRON_SECRET and never runs early or twice", async () => {
+  eq((await cron(null)).status, 401, "no secret");
+  eq((await cron("wrong")).status, 401, "wrong secret");
+  const before = await mock("/_test/counters");
+  const results = await Promise.all([cron(), cron(), cron(), c.get(`/api/schedules/${sched.id}`), c.get("/api/schedules")]);
+  eq(results[0].status, 200, "runner ok");
+  eq((await mock("/_test/counters")).topupCalls, before.topupCalls, "no early run");
+  eq((await c.get(`/api/schedules/${sched.id}`)).json.schedule.runs.length, 1, "still one run");
+});
+await test("runner pays a due schedule exactly once at its time", async () => {
+  const s = await newSchedule({ frequency: "once", totalRuns: 1, startAt: new Date(Date.now() + 3000).toISOString() });
+  const paid = (await c.post(`/api/schedules/${s.id}/payment`, { txHash: await registerNimTx(s) })).json.schedule;
+  eq(paid.status, "active", "active");
+  eq(paid.runsDone, 0, "not yet");
+  await sleep(3500);
+  const before = await mock("/_test/counters");
+  const runs = await Promise.all([cron(), cron(), cron(), cron()]);
+  eq(runs.reduce((n, r) => n + (r.json.ran ?? 0), 0), 1, "exactly one run across concurrent runners");
+  eq((await mock("/_test/counters")).topupCalls - before.topupCalls, 1, "one top-up");
+  const done = (await c.get(`/api/schedules/${s.id}`)).json.schedule;
+  eq(done.status, "completed", "completed");
+  eq(done.runs[0].status, "successful", "delivered");
+});
+await test("start in the past is rejected", async () => {
+  const r = await c.post("/api/schedules", { clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorCode: CODES.airtime, recipient: "08031234567", amount: 1000, amountCurrency: "local", payCurrency: "NIM", frequency: "monthly", totalRuns: 3, startAt: new Date(Date.now() - 86_400_000).toISOString() });
+  eq(r.json.error?.code, "START_IN_PAST", "code");
+});
+await test("cancel stops future runs; unused runs are owed and refunded after on-chain check", async () => {
+  const r = await c.post(`/api/schedules/${sched.id}/cancel`);
+  eq(r.json.schedule.status, "cancelled", "cancelled");
+  eq(r.json.schedule.refundDue, true, "refund due");
+  const auth = { authorization: `Bearer ${ADMIN}` };
+  const owed = Number(sched.quote.payAmountAtomic) - Math.floor(Number(sched.quote.payAmountAtomic) / 3);
+  assert((await c.get("/api/admin/schedules", auth)).json.schedules.some((x) => x.id === sched.id), "listed for admin");
+  const refundHash = nimHash();
+  await mock("/_test/nimiq-tx", { hash: refundHash, from: sched.payToAddress, to: PAYER_NIM, value: owed, recipientData: "", blockNumber: 1001, confirmations: 4, timestamp: Date.now(), executionResult: true });
+  eq((await c.post(`/api/admin/schedules/${sched.id}/refund`, { refundTxHash: nimHash() }, auth)).status, 409, "unverified refund");
+  eq((await c.post(`/api/admin/schedules/${sched.id}/refund`, { refundTxHash: refundHash }, auth)).json.schedule.status, "refunded", "refunded");
+});
+await test("schedules are private to their account", async () => {
+  const other = new Client();
+  await signIn(other);
+  eq((await other.get(`/api/schedules/${sched.id}`)).status, 404, "read");
+  eq((await other.post(`/api/schedules/${sched.id}/cancel`)).status, 404, "cancel");
+});
+
 console.log("\nFailure handling, refunds, isolation");
 let reviewOrder;
 await test("provider failure after verified payment → review", async () => {

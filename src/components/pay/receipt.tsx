@@ -8,7 +8,8 @@ import { fmtCrypto, fmtDate, fmtMoney, fmtRate, fmtUsd, shortHash } from "@/lib/
 import { ORDER_STATUS_LABEL, StatusPill, orderToActivity } from "../status-pill";
 import { Divider, KV, Notice, TestBadge } from "../ui";
 
-const SERVICE = { airtime: "Airtime", data: "Mobile data", electricity: "Electricity" } as const;
+const SERVICE = { airtime: "Airtime", data: "Mobile data", electricity: "Electricity", cable: "Cable TV", internet: "Internet" } as const;
+const ACCOUNT_LABEL = { electricity: "Meter / account", cable: "Smartcard / IUC", internet: "Account" } as const;
 
 function CopyValue({ value, display }: { value: string; display?: string }) {
   const [copied, setCopied] = useState(false);
@@ -52,7 +53,7 @@ export function OrderReceipt({ order }: { order: UtilityOrderDTO }) {
 
       {sandbox && order.status === "successful" ? (
         <Notice tone="info">
-          Test transaction processed by the provider&apos;s sandbox. No real airtime, data or electricity was delivered.
+          Test transaction processed by the provider&apos;s sandbox. Nothing was actually delivered.
         </Notice>
       ) : null}
       {order.status === "requires_review" ? (
@@ -67,7 +68,11 @@ export function OrderReceipt({ order }: { order: UtilityOrderDTO }) {
         <KV k="Status" v={ORDER_STATUS_LABEL[order.status]} />
         <KV k="Service" v={`${SERVICE[order.service]} · ${country?.flag ?? ""} ${country?.name ?? order.countryCode}`} />
         <KV k="Provider" v={order.operatorName} />
-        <KV k={order.service === "electricity" ? "Meter / account" : "Recipient"} v={<span className="font-mono text-xs">{order.service === "electricity" ? order.recipient : `+${order.recipient}`}</span>} />
+        {order.service === "airtime" || order.service === "data" ? (
+          <KV k="Recipient" v={<span className="font-mono text-xs">+{order.recipient}</span>} />
+        ) : (
+          <KV k={ACCOUNT_LABEL[order.service]} v={<span className="font-mono text-xs">{order.recipient}</span>} />
+        )}
         {order.productDescription ? <KV k="Product" v={order.productDescription} /> : null}
         {order.amountLocal !== null && order.localCurrency ? <KV k="Value" v={fmtMoney(order.amountLocal, order.localCurrency)} /> : null}
       </div>

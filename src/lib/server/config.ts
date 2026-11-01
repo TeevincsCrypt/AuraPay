@@ -73,6 +73,8 @@ export const config = {
   allowEmbeddedDb: !isProdRuntime || testMode,
 
   adminToken: env("ADMIN_API_TOKEN"),
+  /** Shared secret for the scheduled-bills runner (Vercel Cron sends it as a Bearer token). */
+  cronSecret: env("CRON_SECRET"),
 
   reloadly: {
     clientId: env("RELOADLY_CLIENT_ID"),

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowDownLeft, ArrowUpRight, Landmark, LineChart, RotateCcw, Smartphone, Wallet, ShieldPlus, ShieldMinus } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, CalendarClock, Landmark, LineChart, RotateCcw, Smartphone, Wallet, ShieldPlus, ShieldMinus } from "lucide-react";
 import type { ActivityItem } from "@/lib/shared/types";
 import { fmtCrypto, fmtNum, fmtRelative, fmtUsd } from "@/lib/shared/format";
 import { cx } from "./ui";
@@ -15,6 +15,7 @@ const ICON = {
   collateral_withdrawal: ShieldMinus,
   wallet_payment: Wallet,
   refund: RotateCcw,
+  bill_schedule: CalendarClock,
 } as const;
 
 export const CATEGORY_LABEL: Record<ActivityItem["category"], string> = {
@@ -26,6 +27,7 @@ export const CATEGORY_LABEL: Record<ActivityItem["category"], string> = {
   collateral_withdrawal: "Collateral withdrawn",
   wallet_payment: "Wallet payment",
   refund: "Refund",
+  bill_schedule: "Scheduled bills",
 };
 
 const STATUS_TEXT: Record<ActivityItem["status"], string> = {

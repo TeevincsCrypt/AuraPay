@@ -5,14 +5,14 @@ import { requireUtilityProvider, toAppError } from "@/lib/server/utilities/provi
 
 export const dynamic = "force-dynamic";
 
-const Query = z.object({ country: z.enum(TARGET_COUNTRY_CODES) });
+const Query = z.object({ country: z.enum(TARGET_COUNTRY_CODES), service: z.enum(["electricity", "cable", "internet"]).default("electricity") });
 
 export const GET = handler(async (req) => {
   enforceRateLimit(req, "catalog", 60, 60);
   const provider = await requireUtilityProvider();
-  const { country } = parseQuery(req.url, Query);
+  const { country, service } = parseQuery(req.url, Query);
   try {
-    return json({ environment: provider.environment, provider: provider.id, billers: await provider.billers(country) });
+    return json({ environment: provider.environment, provider: provider.id, service, billers: await provider.billers(country, service) });
   } catch (err) {
     throw toAppError(err);
   }

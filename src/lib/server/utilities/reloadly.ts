@@ -157,8 +157,13 @@ export function reloadlyProvider(): UtilityProvider {
     countryServices: (cc) => wrap(() => countryServices(cc)),
     operators: (cc, service) => wrap(async () => (await operatorsForCountry(cc)).filter(service === "data" ? isDataOperator : isAirtimeOperator)),
     detectOperator: (e164, cc) => detectOperator(e164, cc),
-    billers: (cc) => wrap(() => electricityBillers(cc)),
-    price: (input) => wrap(() => (input.service === "electricity" ? priceElectricity(input) : priceTopup(input))),
+    billers: (cc, service) => (service === "electricity" ? wrap(() => electricityBillers(cc)) : Promise.resolve([])),
+    price: (input) => {
+      if (input.service === "cable" || input.service === "internet") {
+        return Promise.reject(new ProviderError("SERVICE_UNAVAILABLE", "This service isn't available with the current utility provider.", 422));
+      }
+      return wrap(() => (input.service === "electricity" ? priceElectricity(input) : priceTopup(input)));
+    },
 
     async submit(order: ProviderOrder): Promise<ProviderOutcome> {
       return wrap(async () => {

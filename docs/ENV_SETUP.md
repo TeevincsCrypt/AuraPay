@@ -97,6 +97,28 @@ USDT exists only on Polygon *mainnet*, so it is disabled while the utility provi
 
 ---
 
+### `CRON_SECRET`: scheduled bills
+
+Scheduled bills are paid by a runner endpoint, `/api/cron/schedules`, which pays every bill that's due. Something has to call it regularly, and it only accepts calls that send this secret.
+
+1. Generate a random value, e.g. `openssl rand -hex 32`, and add it as `CRON_SECRET` in Vercel (Production), then redeploy.
+2. Call the runner every 5 minutes. The free and simple way is **cron-job.org**:
+   * Create an account at <https://cron-job.org>, then **Create cronjob**.
+   * URL: `https://<your-domain>/api/cron/schedules`
+   * Schedule: every 5 minutes.
+   * **Advanced → Headers**: add `Authorization` with value `Bearer <your CRON_SECRET>`.
+   * Save, then use **Test run**: it should answer `{"ran":0,"processed":0}` (or a number of runs).
+
+```
+CRON_SECRET=<random 64-character hex>
+```
+
+Also included: `vercel.json` registers a **daily** Vercel Cron as a safety net (Vercel's free plan allows daily crons only, so it can't be the main trigger). Vercel sends `CRON_SECRET` automatically. Schedules also run when their owner opens AuraPay. With cron-job.org every 5 minutes, bills are paid within about 5 minutes of their set time.
+
+*Alternative to cron-job.org:* Supabase's `pg_cron` + `pg_net` extensions can call the URL every minute from your database (Database → Extensions → enable both, then `select cron.schedule('aurapay-bills', '* * * * *', $$ select net.http_get(url := 'https://<your-domain>/api/cron/schedules', headers := '{"Authorization":"Bearer <CRON_SECRET>"}'::jsonb) $$);`).
+
+---
+
 ## 3. Recommended
 
 ### `ADMIN_API_TOKEN`
@@ -145,6 +167,7 @@ Without Finnhub/Twelve Data, prices and charts use the live market price of the 
 APP_URL=https://your-project.vercel.app
 DATABASE_URL=postgresql://...:6543/postgres
 FLUTTERWAVE_SECRET_KEY=FLWSECK_TEST-...
+CRON_SECRET=...
 NIMIQ_NETWORK=testnet
 NIMIQ_MERCHANT_ADDRESS=NQ.. (testnet)
 NIMIQ_RPC_URL=https://... (testnet RPC)

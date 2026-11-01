@@ -1,6 +1,6 @@
 import "server-only";
 import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js";
-import type { BillerDTO, CountryServices, OperatorDTO, UtilityService } from "@/lib/shared/types";
+import type { BillerDTO, BillerService, CountryServices, OperatorDTO, UtilityService } from "@/lib/shared/types";
 import { countryByCode } from "@/lib/shared/countries";
 import { config } from "../config";
 import { AppError } from "../http";
@@ -80,7 +80,7 @@ export interface UtilityProvider {
   countryServices(countryCode: string): Promise<CountryServices>;
   operators(countryCode: string, service: "airtime" | "data"): Promise<OperatorDTO[]>;
   detectOperator(e164: string, countryCode: string): Promise<OperatorDTO | null>;
-  billers(countryCode: string): Promise<BillerDTO[]>;
+  billers(countryCode: string, service: BillerService): Promise<BillerDTO[]>;
   price(input: PriceInput): Promise<Priced>;
   submit(order: ProviderOrder): Promise<ProviderOutcome>;
   poll(order: ProviderOrder): Promise<ProviderOutcome>;

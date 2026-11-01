@@ -2,19 +2,20 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, ChevronRight, Lightbulb, Phone, Smartphone, Wifi, Zap, Star, Trash2 } from "lucide-react";
+import { ArrowLeft, CalendarClock, ChevronRight, Globe, Lightbulb, Phone, Smartphone, Tv, Wifi, Zap, Star, Trash2 } from "lucide-react";
 import { api, ApiError, newRequestId } from "@/lib/client/api";
 import { useApi, useStatus } from "@/lib/client/hooks";
 import { useSession } from "@/lib/client/session";
 import { useWallet, WalletActionError } from "@/lib/client/wallet";
 import { countryByCode, TARGET_COUNTRIES, type TargetCountry } from "@/lib/shared/countries";
 import { fmtCrypto, fmtMoney, fmtNum, fmtUsd } from "@/lib/shared/format";
-import type { BillerDTO, CountryServices, OperatorDTO, PayCurrency, UtilityOrderDTO, UtilityService } from "@/lib/shared/types";
+import type { BillerDTO, BillScheduleDTO, CountryServices, OperatorDTO, PayCurrency, UtilityOrderDTO, UtilityService } from "@/lib/shared/types";
 import { ORDER_STATUS_LABEL, TERMINAL_ORDER_STATUSES } from "../status-pill";
-import { Button, Card, cx, EmptyState, ErrorState, Field, Input, Keypad, KV, Notice, PageHeader, Skeleton, SlideToConfirm, Spinner, TestBadge } from "../ui";
+import { Button, Card, cx, EmptyState, ErrorState, Field, Input, Keypad, KV, Notice, PageHeader, Segmented, Skeleton, SlideToConfirm, Spinner, TestBadge } from "../ui";
 import { OrderReceipt } from "./receipt";
+import { defaultSchedule, ScheduleConfirmed, ScheduleOptions, ScheduleReview, type ScheduleChoice } from "./schedule";
 
-type Step = "country" | "service" | "details" | "review" | "processing" | "result";
+type Step = "country" | "service" | "details" | "review" | "processing" | "result" | "schedule-review" | "schedule-done";
 
 interface CountriesResponse {
   environment: "sandbox" | "production";
@@ -35,6 +36,15 @@ const SERVICE_META: Record<UtilityService, { label: string; icon: typeof Phone; 
   airtime: { label: "Airtime", icon: Smartphone, blurb: "Top up any prepaid line" },
   data: { label: "Mobile data", icon: Wifi, blurb: "Data bundles from local operators" },
   electricity: { label: "Electricity", icon: Lightbulb, blurb: "Prepaid tokens & bill payments" },
+  cable: { label: "Cable TV", icon: Tv, blurb: "DStv, GOtv, StarTimes and more" },
+  internet: { label: "Internet", icon: Globe, blurb: "Home & mobile internet plans" },
+};
+const ALL_SERVICES: UtilityService[] = ["airtime", "data", "electricity", "cable", "internet"];
+const isPhoneService = (s: UtilityService) => s === "airtime" || s === "data";
+const ACCOUNT_FIELD: Record<"electricity" | "cable" | "internet", { label: string; placeholder: string; provider: string; hint: string }> = {
+  electricity: { label: "Meter or account number", placeholder: "e.g. 04223568280", provider: "Electricity provider", hint: "Double-check this number — payments to the wrong meter can't be reversed by the provider." },
+  cable: { label: "Smartcard / IUC number", placeholder: "e.g. 7027914329", provider: "TV provider", hint: "It's on your decoder or smartcard. We check it with the provider before you pay." },
+  internet: { label: "Account or customer ID", placeholder: "Your internet account number", provider: "Internet provider", hint: "We check it with the provider before you pay." },
 };
 
 const PENDING_KEY = "aurapay.pendingPayment";
@@ -68,10 +78,11 @@ export function PayFlow() {
   // Deep links from Home quick actions: /pay?service=airtime
   const [service, setService] = useState<UtilityService | null>(() => {
     const s = params.get("service");
-    return s === "airtime" || s === "data" || s === "electricity" ? s : null;
+    return s && (ALL_SERVICES as string[]).includes(s) ? (s as UtilityService) : null;
   });
   const [prefill, setPrefill] = useState<Beneficiary | null>(null);
   const [order, setOrder] = useState<UtilityOrderDTO | null>(null);
+  const [schedule, setSchedule] = useState<BillScheduleDTO | null>(null);
 
   // Quick Pay deep link from Home: /pay?beneficiary=<id>
   useEffect(() => {
@@ -128,6 +139,7 @@ export function PayFlow() {
     setCountry(null);
     setService(null);
     setOrder(null);
+    setSchedule(null);
     setPrefill(null);
     savePending(null);
     router.replace("/pay");
@@ -136,7 +148,7 @@ export function PayFlow() {
   const back = () => {
     if (step === "service") setStep("country");
     else if (step === "details") setStep(countryInfo ? "service" : "country");
-    else if (step === "review") setStep("details");
+    else if (step === "review" || step === "schedule-review") setStep("details");
   };
 
   const disconnected = status?.utilities.state === "disconnected" || countriesQ.error?.code === "PROVIDER_DISCONNECTED";
@@ -145,11 +157,18 @@ export function PayFlow() {
     <div className="mx-auto max-w-[560px]">
       <PageHeader
         title="Pay"
-        subtitle="Airtime, data and electricity across Africa — paid with NIM or USDT."
-        action={environment === "sandbox" && !disconnected ? <TestBadge /> : undefined}
+        subtitle="Bills across Africa, paid with NIM or USDT."
+        action={
+          <div className="flex items-center gap-2">
+            {environment === "sandbox" && !disconnected ? <TestBadge /> : null}
+            <a href="/schedules" className="inline-flex h-8 items-center gap-1 rounded-full bg-surface px-3 text-[12.5px] font-medium text-fg-2 shadow-[var(--shadow-card)]">
+              <CalendarClock className="size-3.5" /> Scheduled
+            </a>
+          </div>
+        }
       />
 
-      {step !== "country" && step !== "processing" && step !== "result" ? (
+      {step !== "country" && step !== "processing" && step !== "result" && step !== "schedule-done" ? (
         <button onClick={back} className="mb-3 inline-flex items-center gap-1.5 text-[13px] text-fg-3 hover:text-fg-2">
           <ArrowLeft className="size-4" /> Back
         </button>
@@ -200,7 +219,22 @@ export function PayFlow() {
             setOrder(o);
             setStep("review");
           }}
+          onScheduled={(sc) => {
+            setSchedule(sc);
+            setStep("schedule-review");
+          }}
         />
+      ) : step === "schedule-review" && schedule ? (
+        <ScheduleReview
+          schedule={schedule}
+          onExpired={() => setStep("details")}
+          onPaid={(sc) => {
+            setSchedule(sc);
+            setStep("schedule-done");
+          }}
+        />
+      ) : step === "schedule-done" && schedule ? (
+        <ScheduleConfirmed schedule={schedule} onDone={reset} />
       ) : step === "review" && order ? (
         <ReviewStep
           order={order}
@@ -244,7 +278,7 @@ export function PayFlow() {
 // ---------------------------------------------------------------------------
 
 function ServiceChips({ s }: { s: CountryServices }) {
-  const items = (["airtime", "data", "electricity"] as UtilityService[]).filter((k) => s[k]);
+  const items = ALL_SERVICES.filter((k) => s[k]);
   if (!items.length) return <span className="text-xs text-fg-3">No services available</span>;
   return (
     <div className="flex flex-wrap gap-1">
@@ -360,7 +394,7 @@ function ServiceStep({ country, onPick }: { country: CountriesResponse["countrie
         <span className="text-xl">{country.flag}</span> {country.name}
       </h2>
       <div className="space-y-2">
-        {(["airtime", "data", "electricity"] as UtilityService[]).map((s) => {
+        {ALL_SERVICES.map((s) => {
           const M = SERVICE_META[s];
           // Unknown services (catalogue still loading/slow) are offered; the operator list confirms them.
           const available = country.services ? Boolean(country.services[s]) : true;
@@ -452,16 +486,21 @@ function DetailsStep({
   service,
   prefill,
   onQuoted,
+  onScheduled,
 }: {
   country: string;
   service: UtilityService;
   prefill: Beneficiary | null;
   onQuoted: (o: UtilityOrderDTO) => void;
+  onScheduled: (s: BillScheduleDTO) => void;
 }) {
   const info = countryByCode(country)!;
   const w = useWallet();
   const session = useSession();
-  const isPhone = service !== "electricity";
+  const isPhone = isPhoneService(service);
+  // Cable TV and internet are sold as packages of a biller; electricity takes a typed amount.
+  const isPackageBiller = service === "cable" || service === "internet";
+  const accountField = !isPhone ? ACCOUNT_FIELD[service as "electricity" | "cable" | "internet"] : null;
 
   const [recipient, setRecipient] = useState(prefill?.value ? (isPhone ? prefill.value.replace(new RegExp(`^${info.dialCode}`), "") : prefill.value) : "");
   const [chosenOperatorId, setOperatorId] = useState<string | null>(prefill?.operatorCode ?? null);
@@ -473,9 +512,11 @@ function DetailsStep({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestId = useRef(newRequestId());
+  const [when, setWhen] = useState<"now" | "schedule">("now");
+  const [sched, setSched] = useState<ScheduleChoice>(() => defaultSchedule());
 
   const opsQ = useApi<{ operators: OperatorDTO[] }>(isPhone ? `/api/utilities/operators?country=${country}&service=${service}` : null);
-  const billersQ = useApi<{ billers: BillerDTO[] }>(!isPhone ? `/api/utilities/billers?country=${country}` : null);
+  const billersQ = useApi<{ billers: BillerDTO[] }>(!isPhone ? `/api/utilities/billers?country=${country}&service=${service}` : null);
 
   const debounced = useDebounced(recipient, 500);
   const detectQ = useApi<{ valid: boolean; e164: string | null; national?: string; operator: OperatorDTO | null }>(
@@ -499,13 +540,14 @@ function DetailsStep({
 
   const operator = operators.find((o) => o.code === operatorId) ?? null;
   const biller = billersQ.data?.billers.find((b) => b.code === operatorId) ?? null;
-  const product = operator?.products.find((p) => p.code === productCode) ?? null;
+  const product = (isPhone ? operator?.products : biller?.products)?.find((p) => p.code === productCode) ?? null;
   const productAmount = product?.senderAmount ?? null;
 
   const useLocal = isPhone ? Boolean(operator?.denominationType === "RANGE" && operator.supportsLocalAmounts && operator.fxRate) : true;
   const typedAmount = Number(amountText.replace(/,/g, ""));
 
-  const amount = isPhone && operator?.denominationType === "FIXED" ? productAmount : Number.isFinite(typedAmount) && typedAmount > 0 ? typedAmount : null;
+  const amount =
+    (isPhone && operator?.denominationType === "FIXED") || isPackageBiller ? productAmount : Number.isFinite(typedAmount) && typedAmount > 0 ? typedAmount : null;
   const currencyLabel = isPhone ? (useLocal ? operator?.localCurrency : operator?.senderCurrency) : biller?.localCurrency;
 
   // Live USD estimate for display only (the server re-prices authoritatively).
@@ -516,12 +558,13 @@ function DetailsStep({
       if (operator.denominationType === "FIXED") return amount;
       return useLocal && operator.fxRate ? amount / operator.fxRate : amount;
     }
+    if (isPackageBiller) return product?.senderAmount ?? null;
     if (!biller?.fxRate) return null;
     return (amount + (biller.localFee ?? 0)) / biller.fxRate;
-  }, [amount, isPhone, operator, biller, useLocal]);
+  }, [amount, isPhone, isPackageBiller, product, operator, biller, useLocal]);
 
   const phoneValid = !isPhone || detectQ.data?.valid;
-  const canContinue = Boolean(recipient && operatorId && amount && payCurrency && (isPhone ? phoneValid : recipient.replace(/\s/g, "").length >= 6));
+  const canContinue = Boolean(recipient && operatorId && amount && payCurrency && (isPhone ? phoneValid : recipient.replace(/\s/g, "").length >= 5));
 
   const presets = useMemo(() => {
     if (!operator || operator.denominationType !== "RANGE") return [];
@@ -544,9 +587,7 @@ function DetailsStep({
         payerAddress = session.user?.evmAddresses[0] ?? (await w.linkEvm().then(async (a) => (await session.refresh(), a)));
       }
       if (payCurrency === "NIM" && w.nimiq.status !== "connected") await w.connectNimiq();
-      const r = await api<{ order: UtilityOrderDTO }>("/api/orders", {
-        method: "POST",
-        json: {
+      const common = {
           clientRequestId: requestId.current,
           service,
           countryCode: country,
@@ -555,13 +596,22 @@ function DetailsStep({
           recipient: isPhone ? (detectQ.data?.e164 ?? recipient) : recipient,
           recipientLabel: label || undefined,
           amount,
-          amountCurrency: isPhone ? (operator?.denominationType === "FIXED" || !useLocal ? "sender" : "local") : "local",
+          amountCurrency: isPhone ? (operator?.denominationType === "FIXED" || !useLocal ? "sender" : "local") : isPackageBiller ? "sender" : "local",
           payCurrency,
           payerAddress,
-          saveBeneficiary: save,
-        },
-      });
-      onQuoted(r.order);
+      };
+      if (when === "schedule") {
+        const startAt = new Date(sched.startLocal);
+        if (Number.isNaN(startAt.getTime())) throw new Error("Choose a date and time for the first payment.");
+        const r = await api<{ schedule: BillScheduleDTO }>("/api/schedules", {
+          method: "POST",
+          json: { ...common, frequency: sched.frequency, totalRuns: sched.frequency === "once" ? 1 : sched.totalRuns, startAt: startAt.toISOString() },
+        });
+        onScheduled(r.schedule);
+      } else {
+        const r = await api<{ order: UtilityOrderDTO }>("/api/orders", { method: "POST", json: { ...common, saveBeneficiary: save && !isPackageBiller } });
+        onQuoted(r.order);
+      }
       requestId.current = newRequestId();
     } catch (e) {
       setError(e instanceof WalletActionError && e.kind === "rejected" ? null : (e as Error).message);
@@ -591,7 +641,7 @@ function DetailsStep({
         </Field>
       ) : null}
 
-      <Field label={isPhone ? "Operator" : "Electricity provider"}>
+      <Field label={isPhone ? "Operator" : accountField!.provider}>
         {listQ.loading && !listQ.data ? (
           <div className="space-y-2">
             <Skeleton className="h-14 w-full" />
@@ -626,7 +676,8 @@ function DetailsStep({
                   )}
                   <span className="min-w-0">
                     <span className="block truncate text-[13px] font-medium text-fg">{o.name}</span>
-                    {"serviceType" in o ? <span className="text-[11px] text-fg-3">{o.serviceType === "POSTPAID" ? "Postpaid" : "Prepaid"}</span> : null}
+                    {"serviceType" in o && service === "electricity" ? <span className="text-[11px] text-fg-3">{o.serviceType === "POSTPAID" ? "Postpaid" : "Prepaid"}</span> : null}
+                    {"products" in o && isPackageBiller ? <span className="text-[11px] text-fg-3">{o.products.length} {o.products.length === 1 ? "package" : "packages"}</span> : null}
                   </span>
                 </button>
               );
@@ -635,30 +686,30 @@ function DetailsStep({
         )}
       </Field>
 
-      {!isPhone ? (
-        <Field label="Meter or account number" htmlFor="meter" hint="Double-check this number — payments to the wrong meter can't be reversed by the provider.">
-          <Input id="meter" inputMode="numeric" placeholder="e.g. 04223568280" value={recipient} onChange={(e) => setRecipient(e.target.value)} />
+      {accountField ? (
+        <Field label={accountField.label} htmlFor="meter" hint={accountField.hint}>
+          <Input id="meter" inputMode={service === "internet" ? "text" : "numeric"} placeholder={accountField.placeholder} value={recipient} onChange={(e) => setRecipient(e.target.value)} />
         </Field>
       ) : null}
 
       {/* Amount */}
       {(isPhone && operator) || (!isPhone && biller) ? (
-        isPhone && operator!.denominationType === "FIXED" ? (
-          <Field label={service === "data" ? "Choose a bundle" : "Choose an amount"}>
-            {operator!.products.length === 0 ? (
-              <Notice>This operator has no products available.</Notice>
+        (isPhone && operator!.denominationType === "FIXED") || isPackageBiller ? (
+          <Field label={service === "data" ? "Choose a bundle" : isPackageBiller ? "Choose a package" : "Choose an amount"}>
+            {(isPhone ? operator!.products : biller!.products).length === 0 ? (
+              <Notice>No packages are available right now.</Notice>
             ) : (
               <div className="grid max-h-80 grid-cols-1 gap-2 overflow-y-auto sm:grid-cols-2">
-                {operator!.products.map((p) => (
+                {(isPhone ? operator!.products : biller!.products).map((p) => (
                   <button
                     key={p.code}
                     onClick={() => setProductCode(p.code)}
                     className={cx("rounded-xl border p-3 text-left transition-colors", productCode === p.code ? "border-accent bg-accent-soft" : "border-line bg-surface hover:border-line-strong")}
                   >
-                    <span className="block text-[13px] font-medium text-fg">{p.description ?? (p.localAmount ? fmtMoney(p.localAmount, operator!.localCurrency) : fmtUsd(p.senderAmount))}</span>
+                    <span className="block text-[13px] font-medium text-fg">{p.description ?? (p.localAmount ? fmtMoney(p.localAmount, (isPhone ? operator!.localCurrency : biller!.localCurrency)) : fmtUsd(p.senderAmount))}</span>
                     <span className="num mt-0.5 block text-xs text-fg-3">
                       {fmtUsd(p.senderAmount)}
-                      {p.localAmount && p.description ? ` · ${fmtMoney(p.localAmount, operator!.localCurrency)}` : ""}
+                      {p.localAmount && p.description ? ` · ${fmtMoney(p.localAmount, isPhone ? operator!.localCurrency : biller!.localCurrency)}` : ""}
                     </span>
                   </button>
                 ))}
@@ -711,11 +762,24 @@ function DetailsStep({
         </p>
       ) : null}
 
+      <Field label="When">
+        <Segmented<"now" | "schedule">
+          className="w-full"
+          value={when}
+          onChange={setWhen}
+          options={[
+            { value: "now", label: "Pay now" },
+            { value: "schedule", label: "Schedule" },
+          ]}
+        />
+      </Field>
+      {when === "schedule" ? <ScheduleOptions value={sched} onChange={setSched} /> : null}
+
       <Field label="Pay with">
         <PayCurrencyPicker value={payCurrency} onChange={setPayCurrency} />
       </Field>
 
-      <div className="rounded-xl border border-line bg-surface p-3.5">
+      <div className={cx("rounded-xl border border-line bg-surface p-3.5", isPackageBiller && "hidden")}>
         <label className="flex items-center gap-2.5 text-[13px] text-fg-2">
           <input type="checkbox" checked={save} onChange={(e) => setSave(e.target.checked)} className="size-4 accent-[var(--color-accent)]" />
           <Star className="size-4 text-fg-3" /> Save this recipient
@@ -730,7 +794,7 @@ function DetailsStep({
       {error ? <Notice tone="error">{error}</Notice> : null}
 
       <Button size="lg" disabled={!canContinue} loading={submitting} onClick={submit}>
-        Review payment
+        {when === "schedule" ? "Review schedule" : "Review payment"}
       </Button>
     </div>
   );
@@ -813,7 +877,7 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
         </div>
 
         <div className="mt-4 border-t border-line pt-2">
-          <KV k="To" v={`${country?.flag ?? ""} ${order.service === "electricity" ? order.recipient : `+${order.recipient}`}`} />
+          <KV k="To" v={`${country?.flag ?? ""} ${isPhoneService(order.service) ? `+${order.recipient}` : order.recipient}`} />
           <KV k="Provider" v={order.operatorName} />
           {order.productDescription ? <KV k="Product" v={order.productDescription} /> : null}
           {order.amountLocal !== null && order.localCurrency ? <KV k="They receive" v={fmtMoney(order.amountLocal, order.localCurrency)} /> : null}
@@ -836,7 +900,7 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
           {q.payCurrency === "USDT" ? " Your wallet also charges a small Polygon network fee in POL." : ""}
         </p>
         <p>
-          <span className="text-fg-2">What happens next.</span> You approve the payment in your wallet. We confirm it on-chain before sending the {order.service === "electricity" ? "payment to your provider" : "top-up"}. If delivery fails, we refund you.
+          <span className="text-fg-2">What happens next.</span> You approve the payment in your wallet. We confirm it on-chain before sending the {isPhoneService(order.service) ? "top-up" : "payment to your provider"}. If delivery fails, we refund you.
         </p>
       </div>
 
@@ -909,7 +973,7 @@ function ProcessingStep({ order: initial, onDone }: { order: UtilityOrderDTO; on
   const steps: { key: string; label: string; done: boolean; active: boolean }[] = [
     { key: "pay", label: "Payment confirmed on-chain", done: !["quoted", "payment_pending"].includes(order.status), active: order.status === "payment_pending" },
     { key: "send", label: "Sent to provider", done: ["provider_pending", "successful"].includes(order.status), active: ["paid", "fulfilling"].includes(order.status) },
-    { key: "deliver", label: order.service === "electricity" ? "Provider confirmation" : "Delivered", done: order.status === "successful", active: order.status === "provider_pending" },
+    { key: "deliver", label: isPhoneService(order.service) ? "Delivered" : "Provider confirmation", done: order.status === "successful", active: order.status === "provider_pending" },
   ];
 
   return (

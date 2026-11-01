@@ -60,6 +60,20 @@ requires_review ──(admin, refund tx verified on-chain)──► refunded
 * A verified payment whose delivery fails or is uncertain goes to `requires_review`, never silently to `failed`. Refunds are sent by an operator from the merchant wallet and recorded only after on-chain verification (`/api/admin/orders/*`).
 * Safety rule: sandbox (test) top-ups are never funded with real money unless `ALLOW_REAL_PAYMENTS_FOR_SANDBOX=true`.
 
+## 2b. Scheduled bills
+
+Self-custodial wallets can't be charged later, so schedules are **prepaid**: the user pays all runs (1–12; once, weekly or monthly) in one NIM/USDT payment, verified exactly like an order (`payments` row with `order_kind = 'schedule'`, unique tx hash).
+
+```
+quoted ─(tx)─▶ payment_pending ─(verified)─▶ active ─(last run)─▶ completed
+active ─(cancel)─▶ cancelled (refund_due_atomic) ─(admin, verified refund tx)─▶ refunded
+```
+
+* **Runner:** `GET /api/cron/schedules` with `Authorization: Bearer $CRON_SECRET`, called every few minutes (cron-job.org / Supabase pg_cron; daily Vercel Cron as a fallback). Due schedules also run when their owner opens the app, and a "start now" first run happens right after payment.
+* **Exactly once:** a run is claimed by a conditional `UPDATE … where runs_done = n`, and the run's order has a unique `(schedule_id, schedule_run)`. Concurrent runners can't create a run twice.
+* **Each run is a normal order**, created already `paid` and fulfilled through the same claim / submit / poll / review path, so receipts, activity, provider references and refunds work unchanged. The provider reference is the run order's own ref.
+* Amounts are fixed in local currency at scheduling time; numbers, meters and smartcards are validated then.
+
 ## 3. Investing — tokenised stocks via CoW Protocol
 
 **Assets.** `src/lib/shared/stock-tokens.ts` is generated from CoW Protocol's curated RWA registry (`cowprotocol/cowswap/apps/rwa-frontend/data/RWAs.json`, v0.1.9, 2026-10-28). AuraPay buys:

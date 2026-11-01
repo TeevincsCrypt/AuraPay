@@ -82,8 +82,10 @@ async function nimiqPayContext(opts, { nimKey, evmAccount, sentTxs }) {
         getBlockNumber: async () => 1000,
         sign: async (message) => window.__nimSign(message),
         sendBasicTransactionWithData: async (tx) => {
-          await window.__recordTx({ kind: "nim", ...tx, hash: nimHash });
-          return nimHash;
+          // A fresh hash per transaction (AuraPay rejects a reused tx hash).
+          const hash = Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("");
+          await window.__recordTx({ kind: "nim", ...tx, hash });
+          return hash;
         },
         disconnect: () => {},
       };
@@ -218,6 +220,56 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       });
       await page.getByText("New payment").waitFor({ timeout: 20_000 });
       await page.screenshot({ path: `${OUT}/flow-3-receipt.png`, fullPage: true });
+    });
+    await step("schedule a monthly airtime bill: prepay, verified, listed", async () => {
+      await page.goto(APP + "/pay?service=airtime", { waitUntil: "networkidle" });
+      await page.getByRole("button", { name: /Nigeria/ }).click();
+      await page.getByLabel("Recipient phone number").fill("08031234567");
+      await page.getByText(/✓ .*MTN/).waitFor({ timeout: 8000 });
+      for (const k of ["1", "0", "0", "0"]) await page.getByRole("button", { name: `Key ${k}` }).click();
+      await page.getByRole("radio", { name: "Schedule" }).click();
+      await page.getByLabel("First payment").waitFor();
+      await page.getByRole("radio", { name: "Monthly" }).click();
+      await page.getByRole("radio", { name: /Pay with NIM/ }).click();
+      await page.screenshot({ path: `${OUT}/schedule-1-details.png`, fullPage: true });
+      await page.getByRole("button", { name: "Review schedule" }).click();
+      await page.getByText("You're prepaying 3 payments").waitFor();
+      await page.screenshot({ path: `${OUT}/schedule-2-review.png`, fullPage: true });
+      const before = sentTxs.length;
+      const knob = page.getByRole("button", { name: /Slide to prepay/ });
+      // Scroll to the bottom so the slider sits above the floating tab bar, not under it.
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(300);
+      const box = await knob.boundingBox();
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 330, box.y + box.height / 2, { steps: 12 });
+      await page.mouse.up();
+      await page.getByText("Confirming your payment").waitFor({ timeout: 10_000 }).catch(async (e) => {
+        await page.screenshot({ path: `${OUT}/schedule-debug.png`, fullPage: false });
+        throw e;
+      });
+      const tx = sentTxs.slice(before).find((t) => t.kind === "nim");
+      await fetch(`${MOCK}/_test/nimiq-tx`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hash: tx.hash, from: "NQ52 BBBB BBBB BBBB BBBB BBBB BBBB BBBB BBBB", to: tx.recipient, value: tx.value, recipientData: Buffer.from(tx.data).toString("hex"), blockNumber: 1001, confirmations: 3, timestamp: Date.now(), executionResult: true }),
+      });
+      await page.getByText("Bill scheduled").waitFor({ timeout: 20_000 });
+      await page.screenshot({ path: `${OUT}/schedule-3-done.png`, fullPage: true });
+      await page.goto(APP + "/schedules", { waitUntil: "networkidle" });
+      await page.getByText("Next payment").first().waitFor();
+      await noOverflow(page);
+      await page.screenshot({ path: `${OUT}/mobile-schedules.png`, fullPage: true });
+    });
+    await step("cable TV: provider packages and smartcard field", async () => {
+      await page.goto(APP + "/pay?service=cable", { waitUntil: "networkidle" });
+      await page.getByRole("button", { name: /Nigeria/ }).click();
+      await page.getByRole("button", { name: /DSTV/ }).click();
+      await page.getByText("DStv Padi").waitFor();
+      await page.getByLabel("Smartcard / IUC number").waitFor();
+      await noOverflow(page);
+      await page.screenshot({ path: `${OUT}/mobile-cable.png`, fullPage: true });
     });
     await step("borrow: Aave position and borrow sheet with health projection", async () => {
       await page.goto(APP + "/borrow", { waitUntil: "networkidle" });

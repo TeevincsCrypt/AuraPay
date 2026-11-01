@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 const CreateOrder = z.object({
   clientRequestId: z.string().uuid(),
-  service: z.enum(["airtime", "data", "electricity"]),
+  service: z.enum(["airtime", "data", "electricity", "cable", "internet"]),
   countryCode: z.enum(TARGET_COUNTRY_CODES),
   operatorCode: z.string().trim().min(1).max(64),
   productCode: z.string().trim().max(64).optional(),

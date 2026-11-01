@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
-import { LineChart, Lightbulb, Plus, Smartphone, Wifi, ListOrdered, Landmark, ArrowRight } from "lucide-react";
+import { CalendarClock, LineChart, Lightbulb, Plus, Smartphone, Wifi, ListOrdered, Landmark, ArrowRight } from "lucide-react";
 import { ActivityRow } from "@/components/activity-row";
 import { StockRow } from "@/components/invest/stock-row";
 import { Landing } from "@/components/landing";
@@ -109,11 +109,23 @@ function Dashboard({ evm }: { evm: string | null }) {
             </span>
             <span className="text-[12.5px] text-fg-3">New</span>
           </Link>
+          <Link href="/schedules" className="flex w-16 shrink-0 flex-col items-center gap-1.5">
+            <span className="grid size-14 place-items-center rounded-full bg-accent-soft text-accent-strong">
+              <CalendarClock className="size-5" />
+            </span>
+            <span className="text-[12.5px] text-fg-3">Scheduled</span>
+          </Link>
         </div>
       </section>
 
       {/* Promo cards */}
-      <section className="scrollbar-none -mx-4 flex gap-3 overflow-x-auto px-4 sm:mx-0 sm:grid sm:grid-cols-2 sm:px-0">
+      <section className="scrollbar-none -mx-4 flex gap-3 overflow-x-auto px-4 sm:mx-0 sm:grid sm:grid-cols-3 sm:px-0">
+        <Link href="/schedules" className="relative w-[78%] shrink-0 overflow-hidden rounded-[24px] bg-gradient-to-br from-[#e8f6ef] to-[#eef7fb] p-5 sm:w-auto">
+          <p className="text-[15px] font-semibold text-fg">Bills on autopilot</p>
+          <p className="mt-1 max-w-[70%] text-[13px] text-fg-2">Schedule airtime, data, power or TV to pay itself every week or month.</p>
+          <span className="mt-3 inline-flex items-center gap-1 text-[13px] font-medium text-accent">Schedule <ArrowRight className="size-3.5" /></span>
+          <CalendarClock className="absolute -right-2 -bottom-3 size-24 text-[#bfe3d1]" strokeWidth={1.4} />
+        </Link>
         <Link href="/invest" className="relative w-[78%] shrink-0 overflow-hidden rounded-[24px] bg-gradient-to-br from-[#eef1ff] to-[#fbeef7] p-5 sm:w-auto">
           <p className="text-[15px] font-semibold text-fg">Invest from $1</p>
           <p className="mt-1 max-w-[70%] text-[13px] text-fg-2">Own tokenised NVIDIA, Apple and more — held in your own wallet.</p>
