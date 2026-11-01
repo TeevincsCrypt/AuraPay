@@ -1,0 +1,35 @@
+<!doctype html><html><head><link rel="stylesheet" href="common.css"><style>
+body { width: 1500px; height: 500px; overflow: hidden; }
+.bg { position: relative; width: 1500px; height: 500px; overflow: hidden;
+  background:
+    radial-gradient(700px 420px at 8% 0%, #ecd7e8 0%, transparent 62%),
+    radial-gradient(760px 460px at 100% 0%, #fde3cf 0%, transparent 62%),
+    radial-gradient(820px 420px at 55% 120%, #d6ecea 0%, transparent 62%),
+    #f6f2f0; }
+.mark { position: absolute; right: 70px; top: 50%; width: 400px; height: 400px; transform: translateY(-50%) rotate(-4deg);
+  filter: drop-shadow(0 30px 40px rgba(226,72,42,.28)); }
+.glow { position: absolute; right: 60px; top: 50px; width: 420px; height: 420px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,170,120,.45) 0%, rgba(255,170,120,0) 65%); }
+/* content kept inside X's safe area: clear of the avatar (bottom-left) and mobile crop (top/bottom) */
+.content { position: absolute; left: 400px; top: 50%; transform: translateY(-50%); width: 720px; }
+.pill { display: inline-flex; align-items: center; gap: 8px; padding: 8px 16px; border-radius: 999px; background: rgba(255,255,255,.85);
+  box-shadow: 0 2px 10px rgba(0,0,0,.06); font-size: 17px; font-weight: 500; color: #555; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #e8622c; }
+h1 { margin-top: 18px; font-size: 76px; line-height: .98; font-weight: 700; letter-spacing: -0.045em; }
+h1 span { color: #e8622c; }
+p { margin-top: 18px; font-size: 22px; line-height: 1.4; color: #4a4a4a; max-width: 600px; }
+.chips { margin-top: 20px; display: flex; gap: 7px; flex-wrap: nowrap; }
+.chip { padding: 7px 13px; border-radius: 999px; background: rgba(255,255,255,.75); font-size: 14.5px; white-space: nowrap; font-weight: 600; color: #333; }
+.chip.o { background: #e8622c; color: #fff; }
+</style></head><body><div class="bg">
+  <div class="glow"></div>
+  <img class="mark" src="../../public/brand/aurapay-mark-512.png">
+  <div class="content">
+    <span class="pill"><span class="dot"></span>A Nimiq Pay Mini App</span>
+    <h1>Your money.<br><span>Without borders.</span></h1>
+    <p>Pay bills and send money across Africa with NIM or USDT, right from your Nimiq Pay wallet.</p>
+    <div class="chips">
+      <span class="chip o">Send by @username</span><span class="chip">Airtime &amp; Data</span><span class="chip">Electricity</span><span class="chip">Cable TV</span><span class="chip">Savings circles</span>
+    </div>
+  </div>
+</div></body></html>

@@ -1,0 +1,6 @@
+@font-face { font-family: Geist; src: url("../../node_modules/geist/dist/fonts/geist-sans/Geist-Regular.woff2"); font-weight: 400; }
+@font-face { font-family: Geist; src: url("../../node_modules/geist/dist/fonts/geist-sans/Geist-Medium.woff2"); font-weight: 500; }
+@font-face { font-family: Geist; src: url("../../node_modules/geist/dist/fonts/geist-sans/Geist-SemiBold.woff2"); font-weight: 600; }
+@font-face { font-family: Geist; src: url("../../node_modules/geist/dist/fonts/geist-sans/Geist-Bold.woff2"); font-weight: 700; }
+* { margin: 0; box-sizing: border-box; }
+body { font-family: Geist, sans-serif; -webkit-font-smoothing: antialiased; color: #111; }
