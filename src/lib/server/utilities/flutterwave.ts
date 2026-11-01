@@ -2,6 +2,7 @@ import "server-only";
 import type { BillerDTO, CountryServices, OperatorDTO, OperatorProduct } from "@/lib/shared/types";
 import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js";
 import { countryByCode } from "@/lib/shared/countries";
+import { networkFromName, networkFromNumber } from "./networks";
 import { config, testOverride } from "../config";
 import { AppError } from "../http";
 import { errorMessage, log } from "../log";
@@ -191,9 +192,11 @@ async function airtimeOperators(cc: string): Promise<OperatorDTO[]> {
   const fx = await fxPerUsd(currencyOf(cc));
   return [...groups.entries()].map(([code, group]) => {
     const names = [...new Set(group.map(itemLabel))];
+    const nets = [...new Set(group.map((i) => networkFromName(`${i.biller_name ?? ""} ${i.name ?? ""} ${i.short_name ?? ""}`)).filter(Boolean))];
     return {
       code,
-      name: names.length === 1 ? names[0] : "All networks",
+      // A network name where recognisable; Flutterwave's generic "AIRTIME" item serves every network.
+      name: nets.length === 1 ? (nets[0] as string) : names.length === 1 && !/^airtime$/i.test(names[0]) ? names[0] : "All networks",
       logoUrl: null,
       isData: false,
       isBundle: false,
@@ -228,7 +231,9 @@ async function dataOperators(cc: string): Promise<OperatorDTO[]> {
         senderAmount: fx ? roundUpCents(Number(i.amount) / fx) : 0,
         description: `${i.name}${i.validity_period ? ` · ${i.validity_period} days` : ""}`,
       }));
-    const label = (group[0].biller_name || group[0].short_name || billerCode).replace(/\s*data.*$/i, "").trim() || billerCode;
+    // Flutterwave names each bundle (e.g. "MTN 100 MB DATA"); name the group by its network.
+    const net = group.map((i) => networkFromName(`${i.biller_name ?? ""} ${i.name ?? ""} ${i.short_name ?? ""}`)).find(Boolean);
+    const label = net ?? ((group[0].biller_name || group[0].short_name || billerCode).replace(/\s*\d.*$/i, "").replace(/\s*data.*$/i, "").trim() || billerCode);
     return {
       code: billerCode,
       name: `${label} Data`,
@@ -270,6 +275,28 @@ async function powerBillers(cc: string): Promise<BillerDTO[]> {
     maxSenderAmount: null,
     fxRate: fx,
   }));
+}
+
+function emptyOperator(cc: string): OperatorDTO {
+  return {
+    code: "",
+    name: "",
+    logoUrl: null,
+    isData: false,
+    isBundle: false,
+    denominationType: "RANGE",
+    supportsLocalAmounts: true,
+    senderCurrency: "USD",
+    localCurrency: currencyOf(cc),
+    localCurrencySymbol: null,
+    fxRate: null,
+    minAmount: null,
+    maxAmount: null,
+    localMinAmount: null,
+    localMaxAmount: null,
+    products: [],
+    suggestedAmounts: [],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -429,8 +456,16 @@ export function flutterwaveProvider(): UtilityProvider {
       }
     },
     operators: (cc, service) => (service === "data" ? dataOperators(cc) : airtimeOperators(cc)).catch(toProviderError),
-    // Flutterwave has no operator lookup by number; the user picks the network.
-    detectOperator: async () => null,
+    // Flutterwave has no lookup by number, so the network comes from the number prefix
+    // (a suggestion: ported numbers can be changed by the user).
+    async detectOperator(e164: string, cc: string): Promise<OperatorDTO | null> {
+      const dial = countryByCode(cc)?.dialCode;
+      const net = dial ? networkFromNumber(e164, cc, dial) : null;
+      if (!net) return null;
+      const airtime = await airtimeOperators(cc).catch(() => [] as OperatorDTO[]);
+      const match = airtime.find((o) => networkFromName(o.name) === net);
+      return match ?? { ...emptyOperator(cc), code: "", name: net };
+    },
     billers: (cc) => powerBillers(cc).catch(toProviderError),
     price: (input) => price(input).catch(toProviderError),
 

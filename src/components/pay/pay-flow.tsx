@@ -488,12 +488,14 @@ function DetailsStep({
   const detectedPickId = useMemo(() => {
     const d = detectQ.data?.operator;
     if (!d) return null;
-    const exact = operators.find((o) => o.code === d.code);
+    const exact = d.code ? operators.find((o) => o.code === d.code) : undefined;
     const brand = d.name.split(" ")[0]?.toLowerCase();
     const sibling = brand ? operators.find((o) => o.name.toLowerCase().startsWith(brand)) : undefined;
     return (exact ?? sibling)?.code ?? null;
   }, [detectQ.data, operators]);
-  const operatorId = chosenOperatorId ?? detectedPickId;
+  // A single operator (e.g. Flutterwave's all-network airtime) needs no choice.
+  const onlyOperator = isPhone && operators.length === 1 ? operators[0].code : null;
+  const operatorId = chosenOperatorId ?? detectedPickId ?? onlyOperator;
 
   const operator = operators.find((o) => o.code === operatorId) ?? null;
   const biller = billersQ.data?.billers.find((b) => b.code === operatorId) ?? null;
@@ -583,7 +585,7 @@ function DetailsStep({
           label="Recipient phone number"
           htmlFor="phone"
           error={detectQ.data && !detectQ.data.valid && recipient.length > 6 ? `That doesn't look like a valid ${info.name} number.` : null}
-          hint={detectQ.data?.valid ? `✓ ${detectQ.data.national}${detectQ.data.operator ? ` · ${detectQ.data.operator.name}` : ""}` : "We'll detect the operator automatically."}
+          hint={detectQ.data?.valid ? `✓ ${detectQ.data.national}${detectQ.data.operator ? ` · ${detectQ.data.operator.name} detected` : ""}` : "We'll detect the operator automatically."}
         >
           <Input id="phone" inputMode="tel" autoComplete="tel" placeholder="801 234 5678" lead={`+${info.dialCode}`} value={recipient} onChange={(e) => setRecipient(e.target.value)} />
         </Field>

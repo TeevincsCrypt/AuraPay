@@ -232,8 +232,14 @@ await test("countries list only provider-supported services", async () => {
 await test("phone validation + operator auto-detect", async () => {
   const ok = await c.get("/api/utilities/detect?country=NG&phone=08031234567");
   eq(ok.json.e164, "2348031234567", "e164");
-  // Reloadly detects the network; Flutterwave has no lookup, so the user picks it.
-  eq(ok.json.operator?.name ?? null, PROVIDER === "reloadly" ? "MTN Nigeria" : null, "detected");
+  // Reloadly looks the number up; for Flutterwave AuraPay detects the network from the prefix.
+  eq(ok.json.operator?.name ?? null, PROVIDER === "reloadly" ? "MTN Nigeria" : "MTN", "detected");
+  if (PROVIDER === "flutterwave") {
+    eq((await c.get("/api/utilities/detect?country=NG&phone=09044544951")).json.operator?.name, "Airtel", "0904 → Airtel");
+    const data = (await c.get("/api/utilities/operators?country=NG&service=data")).json.operators;
+    eq(data.map((o) => o.name).sort().join(","), "Airtel Data,MTN Data", "data operators named by network");
+    eq(data.find((o) => o.name === "MTN Data").products.length, 2, "bundles grouped under their network");
+  }
   eq((await c.get("/api/utilities/detect?country=NG&phone=12345")).json.valid, false, "invalid");
 });
 

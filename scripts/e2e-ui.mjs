@@ -196,8 +196,7 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await page.getByRole("button", { name: /Nigeria/ }).click();
       await page.getByLabel("Recipient phone number").fill("08031234567");
       const provider = (await (await fetch(APP + "/api/status")).json()).utilities.provider;
-      if (provider === "flutterwave") await page.getByRole("button", { name: /MTN NIGERIA/ }).click();
-      else await page.getByText(/✓ .*MTN Nigeria/).waitFor({ timeout: 8000 });
+      await page.getByText(provider === "flutterwave" ? /✓ .*MTN/ : /✓ .*MTN Nigeria/).waitFor({ timeout: 8000 });
       for (const k of ["2", "0", "0", "0"]) await page.getByRole("button", { name: `Key ${k}` }).click();
       await page.getByRole("radio", { name: /Pay with NIM/ }).click();
       await page.screenshot({ path: `${OUT}/flow-1-details.png`, fullPage: true });

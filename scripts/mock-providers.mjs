@@ -91,8 +91,9 @@ const FLW_ITEMS = {
       { id: 2, biller_code: "BIL102", name: "GLO NIGERIA", default_commission: 0.03, country: "NG", is_airtime: true, biller_name: "AIRTIME", item_code: "AT102", short_name: "GLO NIGERIA", fee: 0, label_name: "Mobile Number", amount: 0 },
     ],
     data_bundle: [
-      { id: 10, biller_code: "BIL108", name: "1.5GB", country: "NG", is_airtime: false, biller_name: "MTN DATA BUNDLE", item_code: "MD136", short_name: "MTN 1.5GB", fee: 0, label_name: "Mobile Number", amount: 1000, validity_period: 30 },
-      { id: 11, biller_code: "BIL108", name: "3GB", country: "NG", is_airtime: false, biller_name: "MTN DATA BUNDLE", item_code: "MD138", short_name: "MTN 3GB", fee: 0, label_name: "Mobile Number", amount: 2000, validity_period: 30 },
+      { id: 10, biller_code: "BIL108", name: "1.5GB", country: "NG", is_airtime: false, biller_name: "MTN 1.5GB DATA", item_code: "MD136", short_name: "MTN 1.5GB", fee: 0, label_name: "Mobile Number", amount: 1000, validity_period: 30 },
+      { id: 12, biller_code: "BIL110", name: "AIRTEL 40 MB Data", country: "NG", is_airtime: false, biller_name: "AIRTEL 40 MB Data", item_code: "MD301", short_name: "AIRTEL 40MB", fee: 0, label_name: "Mobile Number", amount: 50, validity_period: 1 },
+      { id: 11, biller_code: "BIL108", name: "3GB", country: "NG", is_airtime: false, biller_name: "MTN 3GB DATA", item_code: "MD138", short_name: "MTN 3GB", fee: 0, label_name: "Mobile Number", amount: 2000, validity_period: 30 },
     ],
     power: [
       { id: 20, biller_code: "BIL113", name: "IKEDC  PREPAID", country: "NG", is_airtime: false, biller_name: "IKEDC  PREPAID", item_code: "UB157", short_name: "IKEDC PREPAID", fee: 100, label_name: "Meter Number", amount: 0 },

@@ -33,6 +33,12 @@ const PALETTE = {
   success: "#13a05b",
 };
 
+const USDT_POLYGON = "0xc2132D05D31c914a87C6611C10748aEb04B58e8F";
+const USDC_BY_CHAIN: Record<number, string> = {
+  8453: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // Base
+  42161: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", // Arbitrum
+};
+
 export function BuySheet({ open, onClose, quote }: { open: boolean; onClose: () => void; quote: StockQuote }) {
   const w = useWallet();
   const session = useSession();
@@ -43,6 +49,10 @@ export function BuySheet({ open, onClose, quote }: { open: boolean; onClose: () 
   const [err, setErr] = useState<string | null>(null);
   const [posted, setPosted] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  // The widget follows the wallet's current network, so the wallet must be on the
+  // network we're paying from before the widget loads (otherwise it shows its defaults).
+  const [chainState, setChainState] = useState<"switching" | "ready" | "failed">("switching");
+  const [chainAttempt, setChainAttempt] = useState(0);
   const [cfg, setCfg] = useState<{ appCode: string; partnerFee: { bps: number; recipient: string } | null } | null>(null);
   const container = useRef<HTMLDivElement>(null);
   const handler = useRef<CowSwapWidgetHandler | null>(null);
@@ -61,8 +71,22 @@ export function BuySheet({ open, onClose, quote }: { open: boolean; onClose: () 
     };
   }, [open, cfg]);
 
+  const sellChainId = funding === "same-chain" ? (token?.chainId ?? 8453) : 137;
   useEffect(() => {
-    if (!open || !canTrade || !cfg || !container.current || !token || !window.ethereum) return;
+    if (!open || !canTrade) return;
+    let alive = true;
+    setChainState("switching");
+    w.ensureChain(`0x${sellChainId.toString(16)}`)
+      .then(() => alive && setChainState("ready"))
+      .catch(() => alive && setChainState("failed"));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, canTrade, sellChainId, chainAttempt]);
+
+  useEffect(() => {
+    if (!open || !canTrade || !cfg || chainState !== "ready" || !container.current || !token || !window.ethereum) return;
     const eth = window.ethereum;
     const provider = {
       on: (event: string, cb: unknown) => eth.on?.(event, cb as (...a: unknown[]) => void),
@@ -75,13 +99,19 @@ export function BuySheet({ open, onClose, quote }: { open: boolean; onClose: () 
       ...(sameChain ? {} : { targetChainId: token.chainId }),
       tradeType: TradeType.SWAP,
       enabledTradeTypes: [TradeType.SWAP],
-      sell: { asset: sameChain ? "USDC" : "USDT", amount: "25" },
+      // Exact token addresses: USDT on Polygon (Nimiq Pay's USDT) or USDC on the stock's chain.
+      sell: { asset: sameChain ? (USDC_BY_CHAIN[token.chainId] ?? "USDC") : USDT_POLYGON, amount: "25" },
       buy: { asset: token.address },
       customTokens: reg.all.map((t) => ({ chainId: t.chainId, address: t.address, name: `${quote.name} (${t.issuer})`, decimals: t.decimals, symbol: t.symbol })),
       standaloneMode: false,
       disableCustomRecipient: true,
       disableTokenImport: true,
       hideRecentTokens: true,
+      hideFavoriteTokens: true,
+      hideNetworkSelector: true,
+      disableSwitchingTokens: true,
+      disablePriceChart: true,
+      hideOrdersTable: true,
       theme: PALETTE,
       rootStyle: { width: "100%", height: "620px", borderRadius: "20px" },
       ...(cfg.partnerFee ? { partnerFee: cfg.partnerFee } : {}),
@@ -120,7 +150,7 @@ export function BuySheet({ open, onClose, quote }: { open: boolean; onClose: () 
       handler.current = null;
       setReady(false);
     };
-  }, [open, canTrade, cfg, funding, token, reg, quote.symbol, quote.name]);
+  }, [open, canTrade, cfg, chainState, funding, token, reg, quote.symbol, quote.name]);
 
   return (
     <Sheet open={open} onClose={onClose} title={`Buy ${quote.name}`} wide>
@@ -192,10 +222,26 @@ export function BuySheet({ open, onClose, quote }: { open: boolean; onClose: () 
                 </Notice>
               ) : null}
               {err ? <Notice tone="error">{err}</Notice> : null}
+              <ol className="space-y-1.5 rounded-[20px] bg-surface-2 p-4 text-[13px] text-fg-2">
+                <li>
+                  <strong className="text-fg">1.</strong> Type how much {funding === "polygon-usdt" ? "USDT" : "USDC"} to spend in the top box. The bottom box shows the {token.symbol} you&apos;ll get.
+                </li>
+                <li>
+                  <strong className="text-fg">2.</strong> Tap the button, approve {funding === "polygon-usdt" ? "USDT" : "USDC"} once, then confirm the order in your wallet.
+                </li>
+                <li>
+                  <strong className="text-fg">3.</strong> {token.symbol} arrives in your wallet on {CHAIN_NAMES[token.chainId]}, usually within minutes. It shows in Invest → Portfolio.
+                </li>
+              </ol>
+              {chainState === "failed" ? (
+                <Notice tone="warn" title={`Switch to ${CHAIN_NAMES[sellChainId] ?? "the right network"}`} action={<Button size="sm" variant="secondary" onClick={() => setChainAttempt((n) => n + 1)}>Try again</Button>}>
+                  Your wallet needs to be on {CHAIN_NAMES[sellChainId] ?? "the paying network"} to pay with {funding === "polygon-usdt" ? "USDT" : "USDC"}. Approve the network switch in Nimiq Pay.
+                </Notice>
+              ) : null}
               <div className="relative min-h-[620px] overflow-hidden rounded-[20px] bg-surface-2">
                 {!ready ? (
                   <div className="absolute inset-0 grid place-items-center">
-                    <Spinner />
+                    {chainState === "failed" ? null : <Spinner />}
                   </div>
                 ) : null}
                 <div ref={container} />
