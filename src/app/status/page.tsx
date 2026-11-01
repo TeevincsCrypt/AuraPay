@@ -74,10 +74,10 @@ export default function StatusPage() {
             <CardHeader title="Integrations" />
             <div className="divide-y divide-line">
               <Row
-                name="Reloadly · utilities"
-                state={s.reloadly.state === "disconnected" ? "Disconnected" : s.reloadly.state === "sandbox" ? "Sandbox" : "Live"}
-                tone={s.reloadly.state === "production" ? "up" : s.reloadly.state === "sandbox" ? "mint" : "down"}
-                detail={s.reloadly.reason ?? (s.reloadly.state === "sandbox" ? "Test environment — nothing is delivered." : "Live airtime, data and electricity.")}
+                name={`${s.utilities.provider === "reloadly" ? "Reloadly" : "Flutterwave"} · utilities`}
+                state={s.utilities.state === "disconnected" ? "Disconnected" : s.utilities.state === "sandbox" ? "Test mode" : "Live"}
+                tone={s.utilities.state === "production" ? "up" : s.utilities.state === "sandbox" ? "mint" : "down"}
+                detail={s.utilities.reason ?? (s.utilities.state === "sandbox" ? "Test keys — nothing is delivered." : "Live airtime, data and electricity.")}
               />
               <Row
                 name="Exchange rates"

@@ -4,6 +4,7 @@
  *   /auth/oauth/token            Reloadly OAuth (client credentials)
  *   /airtime/...                 Reloadly Airtime API (operators, auto-detect, topups, status)
  *   /utilities/...               Reloadly Utility Payments API (billers, pay, transactions)
+ *   /flw/v3/...                  Flutterwave v3 Bills (bill-categories, validate, payment, status, rates)
  *   /coingecko/api/v3/...        CoinGecko simple price
  *   /nimiq                       Nimiq Albatross JSON-RPC (getTransactionByHash, getBlockNumber)
  *   /polygon                     Polygon JSON-RPC (receipts, blocks, eth_call)
@@ -80,6 +81,33 @@ let nextTopup = 9000;
 let nextBill = 500;
 let polygonHead = 60_000_000;
 const counters = { topupCalls: 0, payCalls: 0, tokenCalls: 0 };
+
+// ---- Flutterwave v3 Bills fixtures
+const FLW_RATES = { NGN: 1500, GHS: 15, KES: 130 };
+const FLW_ITEMS = {
+  NG: {
+    airtime: [
+      { id: 1, biller_code: "BIL099", name: "MTN NIGERIA", default_commission: 0.03, country: "NG", is_airtime: true, biller_name: "AIRTIME", item_code: "AT099", short_name: "MTN NIGERIA", fee: 0, label_name: "Mobile Number", amount: 0 },
+      { id: 2, biller_code: "BIL102", name: "GLO NIGERIA", default_commission: 0.03, country: "NG", is_airtime: true, biller_name: "AIRTIME", item_code: "AT102", short_name: "GLO NIGERIA", fee: 0, label_name: "Mobile Number", amount: 0 },
+    ],
+    data_bundle: [
+      { id: 10, biller_code: "BIL108", name: "1.5GB", country: "NG", is_airtime: false, biller_name: "MTN DATA BUNDLE", item_code: "MD136", short_name: "MTN 1.5GB", fee: 0, label_name: "Mobile Number", amount: 1000, validity_period: 30 },
+      { id: 11, biller_code: "BIL108", name: "3GB", country: "NG", is_airtime: false, biller_name: "MTN DATA BUNDLE", item_code: "MD138", short_name: "MTN 3GB", fee: 0, label_name: "Mobile Number", amount: 2000, validity_period: 30 },
+    ],
+    power: [
+      { id: 20, biller_code: "BIL113", name: "IKEDC  PREPAID", country: "NG", is_airtime: false, biller_name: "IKEDC  PREPAID", item_code: "UB157", short_name: "IKEDC PREPAID", fee: 100, label_name: "Meter Number", amount: 0 },
+    ],
+  },
+  GH: {
+    airtime: [{ id: 30, biller_code: "BIL132", name: "MTN Ghana", country: "GH", is_airtime: true, biller_name: "AIRTIME", item_code: "AT132", short_name: "MTN GH", fee: 0, label_name: "Mobile Number", amount: 0 }],
+    data_bundle: [],
+    power: [],
+  },
+};
+const flwBills = new Map(); // reference -> { body, created, billerCode, itemCode }
+const flwOk = (res, data, message = "success") => send(res, 200, { status: "success", message, data });
+const flwErr = (res, status, message) => send(res, status, { status: "error", message, data: null });
+
 let failNextTopup = null; // e.g. "INSUFFICIENT_BALANCE"
 
 const err = (res, status, errorCode, message) => send(res, status, { timeStamp: new Date().toISOString(), message, path: "", errorCode, infoLink: null, details: [] });
@@ -238,6 +266,65 @@ const server = http.createServer(async (req, res) => {
   if (p === "/_test/fail-next-topup" && req.method === "POST") {
     failNextTopup = body.errorCode ?? "INSUFFICIENT_BALANCE";
     return send(res, 200, { ok: true });
+  }
+
+  // ---- Flutterwave v3
+  if (p.startsWith("/flw/v3/")) {
+    if (!/^Bearer FLWSECK(_TEST)?-/.test(req.headers.authorization ?? "")) return flwErr(res, 401, "Invalid authorization key");
+    const sub = p.slice("/flw/v3".length);
+    let m;
+    if (sub === "/bill-categories") {
+      const cc = url.searchParams.get("country") ?? "NG";
+      const cat = ["airtime", "data_bundle", "power"].find((k) => url.searchParams.get(k) === "1");
+      const all = FLW_ITEMS[cc] ?? { airtime: [], data_bundle: [], power: [] };
+      return flwOk(res, cat ? all[cat] : [...all.airtime, ...all.data_bundle, ...all.power], "Bill categories retrieved");
+    }
+    if (sub === "/transfers/rates") {
+      const amount = Number(url.searchParams.get("amount"));
+      const dest = url.searchParams.get("destination_currency");
+      const rate = FLW_RATES[dest];
+      if (!rate || url.searchParams.get("source_currency") !== "USD") return flwErr(res, 400, "Unsupported currency pair");
+      return flwOk(res, { rate: 1 / rate, source: { currency: "USD", amount: Math.round((amount / rate) * 1e6) / 1e6 }, destination: { currency: dest, amount } }, "Transfer amount fetched");
+    }
+    if ((m = sub.match(/^\/bill-items\/([^/]+)\/validate$/))) {
+      const customer = url.searchParams.get("customer") ?? "";
+      const item = Object.values(FLW_ITEMS).flatMap((c) => [...c.airtime, ...c.data_bundle, ...c.power]).find((i) => i.item_code === m[1] && i.biller_code === url.searchParams.get("code"));
+      if (!item) return flwErr(res, 400, "Invalid biller code");
+      if (item.label_name === "Meter Number") {
+        if (customer === "00000000") return flwOk(res, { response_code: "RR", response_message: "Invalid meter number", name: null, customer });
+        return flwOk(res, { response_code: "00", address: null, response_message: "Successful", name: "ADEBAYO TEST", biller_code: item.biller_code, customer, product_code: item.item_code, email: null, fee: 100, maximum: 500000, minimum: 1000 });
+      }
+      if (!/^\+\d{10,15}$/.test(customer)) return flwErr(res, 400, "Invalid customer");
+      return flwOk(res, { response_code: "00", response_message: "Successful", name: null, biller_code: item.biller_code, customer, product_code: item.item_code, fee: 0, maximum: 50000, minimum: 100 });
+    }
+    if ((m = sub.match(/^\/billers\/([^/]+)\/items\/([^/]+)\/payment$/)) && req.method === "POST") {
+      const isPower = m[1] === "BIL113";
+      if (isPower) counters.payCalls++;
+      else counters.topupCalls++;
+      if (failNextTopup) {
+        failNextTopup = null;
+        return flwErr(res, 400, "Insufficient wallet balance");
+      }
+      if (!body.reference || !body.customer_id || !(body.amount > 0) || !body.country) return flwErr(res, 400, "Missing required field");
+      if (flwBills.has(body.reference)) return flwErr(res, 400, "Duplicate reference");
+      customIds.set(body.reference, (customIds.get(body.reference) ?? 0) + 1);
+      flwBills.set(body.reference, { body, created: Date.now(), billerCode: m[1], itemCode: m[2], isPower });
+      return flwOk(res, {
+        phone_number: body.customer_id, amount: body.amount, network: isPower ? "IKEDC" : "MTN", code: "200",
+        tx_ref: `CF-FLYAPI-${Date.now()}`, flw_ref: `BPUSSD${Date.now()}`, reference: body.reference, status: isPower ? "pending" : "success",
+      }, "Bill payment successful");
+    }
+    if ((m = sub.match(/^\/bills\/([^/]+)$/))) {
+      const b = flwBills.get(decodeURIComponent(m[1]));
+      if (!b) return flwErr(res, 404, "Bill not found");
+      const done = !b.isPower || Date.now() - b.created > 2500;
+      return flwOk(res, {
+        currency: "NGN", customer_id: b.body.customer_id, frequency: "One Time", amount: String(b.body.amount), product: b.isPower ? "IKEDC" : "AIRTIME",
+        product_name: b.isPower ? "IKEDC PREPAID" : "MTN", commission: 0, transaction_date: new Date(b.created).toISOString(), country: b.body.country,
+        tx_ref: b.body.reference, extra: done && b.isPower ? { token: "1234-5678-9012-3456-7890" } : null, product_details: "FLY-API", status: done ? "successful" : "pending",
+      }, "Bill status fetched");
+    }
+    return flwErr(res, 404, "Not found");
   }
 
   // ---- Reloadly auth

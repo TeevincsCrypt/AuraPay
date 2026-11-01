@@ -3,6 +3,7 @@ import type { PayCurrency, RailStatus } from "@/lib/shared/types";
 import { config } from "./config";
 import { isValidNimAddressFormat } from "./payments/nimiq";
 import { isEvmAddress } from "./payments/polygon";
+import { utilityEnvironment } from "./utilities/provider";
 
 /**
  * Which payment rails may fund a utility order right now, and why not.
@@ -13,7 +14,7 @@ import { isEvmAddress } from "./payments/polygon";
  * ALLOW_REAL_PAYMENTS_FOR_SANDBOX is explicitly set.
  */
 export function paymentRails(): Record<PayCurrency, RailStatus> {
-  const sandbox = config.reloadly.mode === "sandbox";
+  const sandbox = utilityEnvironment() === "sandbox";
 
   const nim: RailStatus = (() => {
     if (!config.nimiq.merchantAddress || !isValidNimAddressFormat(config.nimiq.merchantAddress)) {

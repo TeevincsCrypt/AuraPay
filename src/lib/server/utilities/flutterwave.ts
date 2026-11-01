@@ -1,0 +1,437 @@
+import "server-only";
+import type { BillerDTO, CountryServices, OperatorDTO, OperatorProduct } from "@/lib/shared/types";
+import { countryByCode } from "@/lib/shared/countries";
+import { config, testOverride } from "../config";
+import { AppError } from "../http";
+import { errorMessage, log } from "../log";
+import { normalisePhone, ProviderError, roundUpCents, type PriceInput, type Priced, type ProviderOrder, type ProviderOutcome, type UtilityProvider } from "./provider";
+
+/**
+ * Flutterwave Bills (v3) behind the utility-provider interface.
+ *
+ * Endpoints, from Flutterwave's official SDKs (Flutterwave/Node-v3, Flutterwave/PHP-v3):
+ *   GET  /v3/bill-categories?country=XX&airtime=1 | data_bundle=1 | power=1   catalogue
+ *   GET  /v3/bill-items/{item_code}/validate?code={biller_code}&customer=…     customer/meter check
+ *   POST /v3/billers/{biller_code}/items/{item_code}/payment                    pay {country, customer_id, amount, reference}
+ *   GET  /v3/bills/{reference}?verbose=1                                        status
+ *   GET  /v3/transfers/rates?amount=&destination_currency=&source_currency=USD  FX (USD needed for a local amount)
+ *
+ * Bills are priced and charged in local currency from the Flutterwave balance. AuraPay
+ * prices them in USD with Flutterwave's own rate for the exact amount. `reference` is the
+ * AuraPay order ref, which Flutterwave rejects if reused. Test keys (FLWSECK_TEST-…) run
+ * in test mode: nothing is delivered and orders are labelled TEST.
+ */
+
+interface FlwResponse<T> {
+  status: "success" | "error" | string;
+  message?: string;
+  data: T;
+}
+
+interface FlwItem {
+  id: number;
+  biller_code: string;
+  name: string;
+  country: string;
+  is_airtime?: boolean;
+  biller_name?: string;
+  item_code: string;
+  short_name?: string;
+  fee?: number;
+  label_name?: string;
+  amount?: number;
+  validity_period?: string | number | null;
+}
+
+class FlwError extends Error {
+  constructor(public readonly status: number, message: string, public readonly outcomeUnknown = false) {
+    super(message);
+  }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function base(): string {
+  return (testOverride("FLUTTERWAVE_URL_OVERRIDE") ?? "https://api.flutterwave.com").replace(/\/$/, "") + "/v3";
+}
+
+async function flw<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<FlwResponse<T>> {
+  const key = config.flutterwave.secretKey;
+  if (!key) throw new ProviderError("PROVIDER_DISCONNECTED", "The utility provider is not connected.", 503);
+  const isRead = method === "GET";
+  for (let attempt = 0; attempt < (isRead ? 3 : 1); attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`${base()}${path}`, {
+        method,
+        headers: { Authorization: `Bearer ${key}`, Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(isRead ? 15_000 : 45_000),
+        cache: "no-store",
+      });
+    } catch (err) {
+      if (!isRead) throw new FlwError(0, "Network error talking to Flutterwave.", true);
+      if (attempt < 2) {
+        await sleep(400 * 2 ** attempt);
+        continue;
+      }
+      throw new FlwError(0, `Network error talking to Flutterwave: ${errorMessage(err)}`);
+    }
+    if (isRead && (res.status === 429 || res.status >= 500) && attempt < 2) {
+      await sleep(600 * 2 ** attempt);
+      continue;
+    }
+    const json = (await res.json().catch(() => null)) as FlwResponse<T> | null;
+    if (!res.ok || !json || json.status !== "success") {
+      const msg = json?.message || `Flutterwave returned HTTP ${res.status}`;
+      log.warn("flutterwave.request_failed", { method, path: path.split("?")[0], status: res.status, message: msg });
+      throw new FlwError(res.status, msg, !isRead && (res.status >= 500 || res.status === 0));
+    }
+    return json;
+  }
+  throw new FlwError(0, "Flutterwave is not responding. Please try again shortly.");
+}
+
+function toProviderError(err: unknown): never {
+  if (err instanceof ProviderError || err instanceof AppError) throw err;
+  if (err instanceof FlwError) {
+    if (err.status === 401) throw new ProviderError("PROVIDER_AUTH_FAILED", "Couldn't authenticate with Flutterwave. Check FLUTTERWAVE_SECRET_KEY.", 502);
+    const m = err.message.toLowerCase();
+    const friendly = /insufficient|balance/.test(m)
+      ? "This service is temporarily unavailable (provider balance is low)."
+      : /duplicate|already exist/.test(m)
+        ? "This order was already submitted to the provider."
+        : err.message;
+    throw new ProviderError(/insufficient|balance/.test(m) ? "INSUFFICIENT_BALANCE" : "PROVIDER_ERROR", friendly, err.status === 404 ? 404 : 502, err.outcomeUnknown);
+  }
+  throw err;
+}
+
+// ---------------------------------------------------------------------------
+// Catalogue (cached 10 minutes per country/category)
+// ---------------------------------------------------------------------------
+
+type Category = "airtime" | "data_bundle" | "power";
+const g = globalThis as unknown as { __flwCache?: Map<string, { at: number; value: unknown }> };
+const cache = (g.__flwCache ??= new Map());
+
+async function cached<T>(key: string, ttl: number, fn: () => Promise<T>): Promise<T> {
+  const k = `${config.flutterwave.mode}:${key}`;
+  const hit = cache.get(k);
+  if (hit && Date.now() - hit.at < ttl) return hit.value as T;
+  const value = await fn();
+  cache.set(k, { at: Date.now(), value });
+  return value;
+}
+
+async function items(countryCode: string, category: Category): Promise<FlwItem[]> {
+  return cached(`items:${countryCode}:${category}`, 10 * 60_000, async () => {
+    const r = await flw<FlwItem[]>("GET", `/bill-categories?country=${encodeURIComponent(countryCode)}&${category}=1`);
+    return (Array.isArray(r.data) ? r.data : []).filter((i) => !i.country || i.country.toUpperCase() === countryCode);
+  });
+}
+
+/** USD needed to deliver `localAmount` of `currency` (Flutterwave's rate). */
+async function usdFor(localAmount: number, currency: string): Promise<number> {
+  const r = await flw<{ rate?: number; source?: { currency: string; amount: number }; destination?: { currency: string; amount: number } }>(
+    "GET",
+    `/transfers/rates?amount=${encodeURIComponent(String(localAmount))}&destination_currency=${encodeURIComponent(currency)}&source_currency=USD`,
+  );
+  const usd = Number(r.data?.source?.amount);
+  if (!(usd > 0) || r.data?.source?.currency?.toUpperCase() !== "USD") throw new ProviderError("RATES_UNAVAILABLE", "Couldn't get an exchange rate from the provider.", 503);
+  return usd;
+}
+
+/** Local currency units per 1 USD, for display (cached). */
+async function fxPerUsd(currency: string): Promise<number | null> {
+  try {
+    return await cached(`fx:${currency}`, 10 * 60_000, async () => {
+      const sample = 1000;
+      return sample / (await usdFor(sample, currency));
+    });
+  } catch {
+    return null;
+  }
+}
+
+const currencyOf = (cc: string) => countryByCode(cc)?.currency ?? "";
+
+function itemLabel(i: FlwItem): string {
+  return (i.short_name || i.biller_name || i.name || i.biller_code).trim();
+}
+
+/** Airtime operators: one per biller/item pair (variable amount in local currency). */
+async function airtimeOperators(cc: string): Promise<OperatorDTO[]> {
+  const list = (await items(cc, "airtime")).filter((i) => i.is_airtime !== false);
+  const groups = new Map<string, FlwItem[]>();
+  for (const i of list) groups.set(`${i.biller_code}:${i.item_code}`, [...(groups.get(`${i.biller_code}:${i.item_code}`) ?? []), i]);
+  const fx = await fxPerUsd(currencyOf(cc));
+  return [...groups.entries()].map(([code, group]) => {
+    const names = [...new Set(group.map(itemLabel))];
+    return {
+      code,
+      name: names.length === 1 ? names[0] : "All networks",
+      logoUrl: null,
+      isData: false,
+      isBundle: false,
+      denominationType: "RANGE" as const,
+      supportsLocalAmounts: true,
+      senderCurrency: "USD",
+      localCurrency: currencyOf(cc),
+      localCurrencySymbol: null,
+      fxRate: fx,
+      minAmount: null,
+      maxAmount: null,
+      localMinAmount: null,
+      localMaxAmount: null,
+      products: [],
+      suggestedAmounts: [],
+    };
+  });
+}
+
+/** Data operators: bundles grouped by biller; each bundle is a fixed-price product. */
+async function dataOperators(cc: string): Promise<OperatorDTO[]> {
+  const list = (await items(cc, "data_bundle")).filter((i) => Number(i.amount) > 0);
+  const fx = await fxPerUsd(currencyOf(cc));
+  const groups = new Map<string, FlwItem[]>();
+  for (const i of list) groups.set(i.biller_code, [...(groups.get(i.biller_code) ?? []), i]);
+  return [...groups.entries()].map(([billerCode, group]) => {
+    const products: OperatorProduct[] = group
+      .sort((a, b) => Number(a.amount) - Number(b.amount))
+      .map((i) => ({
+        code: i.item_code,
+        localAmount: Number(i.amount),
+        senderAmount: fx ? roundUpCents(Number(i.amount) / fx) : 0,
+        description: `${i.name}${i.validity_period ? ` · ${i.validity_period} days` : ""}`,
+      }));
+    const label = (group[0].biller_name || group[0].short_name || billerCode).replace(/\s*data.*$/i, "").trim() || billerCode;
+    return {
+      code: billerCode,
+      name: `${label} Data`,
+      logoUrl: null,
+      isData: true,
+      isBundle: false,
+      denominationType: "FIXED" as const,
+      supportsLocalAmounts: false,
+      senderCurrency: "USD",
+      localCurrency: currencyOf(cc),
+      localCurrencySymbol: null,
+      fxRate: fx,
+      minAmount: null,
+      maxAmount: null,
+      localMinAmount: null,
+      localMaxAmount: null,
+      products,
+      suggestedAmounts: [],
+    };
+  });
+}
+
+async function powerBillers(cc: string): Promise<BillerDTO[]> {
+  const list = await items(cc, "power");
+  const fx = await fxPerUsd(currencyOf(cc));
+  return list.map((i) => ({
+    code: `${i.biller_code}:${i.item_code}`,
+    name: i.name || i.biller_name || i.biller_code,
+    countryCode: cc,
+    type: "ELECTRICITY_BILL_PAYMENT",
+    serviceType: /postpaid/i.test(`${i.name} ${i.biller_name ?? ""}`) ? "POSTPAID" : "PREPAID",
+    localCurrency: currencyOf(cc),
+    localAmountSupported: true,
+    minLocalAmount: null,
+    maxLocalAmount: null,
+    localFee: i.fee ? Number(i.fee) : null,
+    senderCurrency: "USD",
+    minSenderAmount: null,
+    maxSenderAmount: null,
+    fxRate: fx,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Validation, pricing, submission
+// ---------------------------------------------------------------------------
+
+interface ValidateData {
+  response_code?: string;
+  response_message?: string;
+  name?: string | null;
+  customer?: string;
+  fee?: number;
+  minimum?: number;
+  maximum?: number;
+}
+
+/** Flutterwave customer check (phone for airtime/data, meter/account for electricity). */
+async function validateCustomer(billerCode: string, itemCode: string, customer: string): Promise<ValidateData> {
+  try {
+    const r = await flw<ValidateData>("GET", `/bill-items/${encodeURIComponent(itemCode)}/validate?code=${encodeURIComponent(billerCode)}&customer=${encodeURIComponent(customer)}`);
+    const d = r.data ?? {};
+    if (d.response_code && d.response_code !== "00") {
+      throw new AppError("CUSTOMER_INVALID", d.response_message || "The provider couldn't verify this customer.", 422);
+    }
+    return d;
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    if (err instanceof FlwError && err.status >= 400 && err.status < 500) {
+      throw new AppError("CUSTOMER_INVALID", err.message || "The provider couldn't verify this customer.", 422);
+    }
+    return toProviderError(err);
+  }
+}
+
+function splitCode(code: string): [string, string] {
+  const [biller, item] = code.split(":");
+  if (!biller || !item) throw new AppError("OPERATOR_NOT_FOUND", "Provider not found.", 404);
+  return [biller, item];
+}
+
+async function price(input: PriceInput): Promise<Priced> {
+  const cc = input.countryCode;
+  const currency = currencyOf(cc);
+  if (!currency) throw new AppError("COUNTRY_NOT_SUPPORTED", "Country not supported.", 422);
+
+  if (input.service === "airtime") {
+    const op = (await airtimeOperators(cc)).find((o) => o.code === input.operatorCode);
+    if (!op) throw new AppError("OPERATOR_NOT_FOUND", "This operator isn't available.", 404);
+    if (input.amountCurrency !== "local") throw new AppError("INVALID_AMOUNT_CURRENCY", `Enter the amount in ${currency}.`, 422);
+    const recipient = normalisePhone(input.recipient, cc);
+    const [biller, item] = splitCode(op.code);
+    const v = await validateCustomer(biller, item, `+${recipient}`);
+    if (v.minimum && input.amount < v.minimum) throw new AppError("AMOUNT_TOO_LOW", `Minimum is ${v.minimum} ${currency}.`, 422);
+    if (v.maximum && input.amount > v.maximum) throw new AppError("AMOUNT_TOO_HIGH", `Maximum is ${v.maximum} ${currency}.`, 422);
+    const cost = roundUpCents(await usdFor(input.amount + Number(v.fee ?? 0), currency));
+    return { operatorName: op.name, operatorCode: op.code, itemCode: item, productDescription: null, amountLocal: input.amount, localCurrency: currency, amountSender: cost, senderCurrency: "USD", useLocalAmount: true, providerCostUsd: cost, recipient };
+  }
+
+  if (input.service === "data") {
+    const op = (await dataOperators(cc)).find((o) => o.code === input.operatorCode);
+    const product = op?.products.find((p) => p.code === input.productCode);
+    if (!op || !product || product.localAmount === null) throw new AppError("INVALID_PRODUCT", "Select one of the available bundles.", 422);
+    const recipient = normalisePhone(input.recipient, cc);
+    const raw = (await items(cc, "data_bundle")).find((i) => i.item_code === product.code && i.biller_code === op.code);
+    const cost = roundUpCents(await usdFor(product.localAmount + Number(raw?.fee ?? 0), currency));
+    return { operatorName: op.name, operatorCode: op.code, itemCode: product.code, productDescription: product.description, amountLocal: product.localAmount, localCurrency: currency, amountSender: cost, senderCurrency: "USD", useLocalAmount: true, providerCostUsd: cost, recipient };
+  }
+
+  // Electricity
+  const biller = (await powerBillers(cc)).find((b) => b.code === input.operatorCode);
+  if (!biller) throw new AppError("BILLER_NOT_FOUND", "Electricity provider not found.", 404);
+  const meter = input.recipient.replace(/[\s-]/g, "");
+  if (!/^[0-9A-Za-z]{6,24}$/.test(meter)) throw new AppError("INVALID_METER", "Enter a valid meter or account number.", 422);
+  if (input.amountCurrency !== "local") throw new AppError("INVALID_AMOUNT_CURRENCY", `Enter the amount in ${currency}.`, 422);
+  const [billerCode, itemCode] = splitCode(biller.code);
+  const v = await validateCustomer(billerCode, itemCode, meter);
+  if (v.minimum && input.amount < v.minimum) throw new AppError("AMOUNT_TOO_LOW", `Minimum is ${v.minimum} ${currency}.`, 422);
+  if (v.maximum && input.amount > v.maximum) throw new AppError("AMOUNT_TOO_HIGH", `Maximum is ${v.maximum} ${currency}.`, 422);
+  const fee = Number(v.fee ?? biller.localFee ?? 0);
+  const cost = roundUpCents(await usdFor(input.amount + fee, currency));
+  const customerName = v.name && v.name.trim() ? v.name.trim() : null;
+  return {
+    operatorName: biller.name,
+    operatorCode: biller.code,
+    itemCode,
+    productDescription: `${biller.serviceType === "POSTPAID" ? "Postpaid" : "Prepaid"} electricity${customerName ? ` · ${customerName}` : ""}${fee ? ` · incl. fee ${fee} ${currency}` : ""}`,
+    amountLocal: input.amount,
+    localCurrency: currency,
+    amountSender: cost,
+    senderCurrency: "USD",
+    useLocalAmount: true,
+    providerCostUsd: cost,
+    recipient: meter,
+  };
+}
+
+interface PayData {
+  phone_number?: string;
+  amount?: number;
+  network?: string;
+  code?: string;
+  tx_ref?: string;
+  flw_ref?: string;
+  reference?: string | null;
+  status?: string;
+  recharge_token?: string | null;
+  token?: string | null;
+  extra?: unknown;
+}
+
+function deliveryFrom(d: PayData | undefined): Record<string, unknown> {
+  const extra = d?.extra;
+  const tokenFromExtra = typeof extra === "string" ? extra : extra && typeof extra === "object" ? ((extra as Record<string, unknown>).token as string | undefined) : undefined;
+  const token = d?.recharge_token || d?.token || tokenFromExtra || null;
+  return { token, network: d?.network ?? null, flwRef: d?.flw_ref ?? null, txRef: d?.tx_ref ?? null };
+}
+
+function statusOf(raw: string | undefined): "successful" | "provider_pending" | "requires_review" | null {
+  const s = (raw ?? "").toLowerCase();
+  if (!s) return null;
+  if (["success", "successful", "completed"].includes(s)) return "successful";
+  if (["pending", "processing", "new"].includes(s)) return "provider_pending";
+  if (["failed", "error", "reversed", "cancelled"].includes(s)) return "requires_review";
+  return "provider_pending";
+}
+
+export function flutterwaveProvider(): UtilityProvider {
+  return {
+    id: "flutterwave",
+    label: "Flutterwave",
+    environment: config.flutterwave.mode,
+
+    async countryServices(cc: string): Promise<CountryServices> {
+      try {
+        const [a, d, p] = await Promise.all([items(cc, "airtime"), items(cc, "data_bundle"), items(cc, "power")]);
+        const dataCount = d.filter((i) => Number(i.amount) > 0).length;
+        return { countryCode: cc, airtime: a.length > 0, data: dataCount > 0, electricity: p.length > 0, operatorCount: a.length + dataCount, billerCount: p.length };
+      } catch (err) {
+        return toProviderError(err);
+      }
+    },
+    operators: (cc, service) => (service === "data" ? dataOperators(cc) : airtimeOperators(cc)).catch(toProviderError),
+    // Flutterwave has no operator lookup by number; the user picks the network.
+    detectOperator: async () => null,
+    billers: (cc) => powerBillers(cc).catch(toProviderError),
+    price: (input) => price(input).catch(toProviderError),
+
+    async submit(order: ProviderOrder): Promise<ProviderOutcome> {
+      const [billerCode, itemCode] = order.service === "electricity" ? splitCode(order.operatorCode) : [order.operatorCode.split(":")[0], order.itemCode ?? order.operatorCode.split(":")[1]];
+      if (!billerCode || !itemCode) throw new ProviderError("PROVIDER_ERROR", "Order is missing provider codes.", 500);
+      try {
+        const r = await flw<PayData>("POST", `/billers/${encodeURIComponent(billerCode)}/items/${encodeURIComponent(itemCode)}/payment`, {
+          country: order.countryCode,
+          customer_id: order.service === "electricity" ? order.recipient : `+${order.recipient}`,
+          amount: order.amountLocal,
+          reference: order.ref,
+        });
+        const d = r.data;
+        const next = statusOf(d?.status) ?? "successful";
+        return {
+          next,
+          providerTransactionId: d?.flw_ref || d?.tx_ref || order.ref,
+          providerStatus: d?.status ?? r.message ?? "success",
+          providerResponse: r,
+          deliveryDetails: deliveryFrom(d),
+          reason: next === "requires_review" ? `Provider reported ${d?.status}. Refund required.` : null,
+        };
+      } catch (err) {
+        return toProviderError(err);
+      }
+    },
+
+    async poll(order: ProviderOrder): Promise<ProviderOutcome> {
+      try {
+        const r = await flw<PayData & { product?: string }>("GET", `/bills/${encodeURIComponent(order.ref)}?verbose=1`);
+        const next = statusOf(r.data?.status);
+        if (next === "successful" || (!r.data?.status && r.data)) {
+          return { next: "successful", providerStatus: r.data?.status ?? "success", providerResponse: r, deliveryDetails: deliveryFrom(r.data) };
+        }
+        if (next === "requires_review") return { next, providerStatus: r.data?.status ?? "failed", providerResponse: r, reason: `Provider reported ${r.data?.status}. Refund required.` };
+        return { next: "unchanged", providerStatus: r.data?.status ?? "pending" };
+      } catch (err) {
+        if (err instanceof FlwError && err.status === 404) return { next: "unchanged", providerStatus: "pending" };
+        return toProviderError(err);
+      }
+    },
+  };
+}

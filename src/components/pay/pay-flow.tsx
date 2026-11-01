@@ -27,7 +27,7 @@ interface Beneficiary {
   countryCode: string;
   label: string;
   value: string;
-  operatorId: number | null;
+  operatorCode: string | null;
   operatorName: string | null;
 }
 
@@ -115,7 +115,7 @@ export function PayFlow() {
   }, []);
 
   const countryInfo = countriesQ.data?.countries.find((c) => c.code === country);
-  const environment = countriesQ.data?.environment ?? (status?.reloadly.state === "production" ? "production" : "sandbox");
+  const environment = countriesQ.data?.environment ?? (status?.utilities.state === "production" ? "production" : "sandbox");
 
   const reset = () => {
     setStep("country");
@@ -133,7 +133,7 @@ export function PayFlow() {
     else if (step === "review") setStep("details");
   };
 
-  const disconnected = status?.reloadly.state === "disconnected" || countriesQ.error?.code === "PROVIDER_DISCONNECTED";
+  const disconnected = status?.utilities.state === "disconnected" || countriesQ.error?.code === "PROVIDER_DISCONNECTED";
 
   return (
     <div className="mx-auto max-w-[560px]">
@@ -152,7 +152,7 @@ export function PayFlow() {
       {disconnected ? (
         <Card className="p-2">
           <EmptyState icon={<Zap className="size-5" />} title="Utility payments are offline">
-            The utility provider (Reloadly) isn&apos;t connected on this deployment, so no services can be offered. Add RELOADLY_CLIENT_ID and RELOADLY_CLIENT_SECRET to enable it.
+            The utility provider isn&apos;t connected on this deployment, so no services can be offered. Add FLUTTERWAVE_SECRET_KEY to enable it.
           </EmptyState>
         </Card>
       ) : step === "country" ? (
@@ -454,8 +454,8 @@ function DetailsStep({
   const isPhone = service !== "electricity";
 
   const [recipient, setRecipient] = useState(prefill?.value ? (isPhone ? prefill.value.replace(new RegExp(`^${info.dialCode}`), "") : prefill.value) : "");
-  const [chosenOperatorId, setOperatorId] = useState<number | null>(prefill?.operatorId ?? null);
-  const [productAmount, setProductAmount] = useState<number | null>(null);
+  const [chosenOperatorId, setOperatorId] = useState<string | null>(prefill?.operatorCode ?? null);
+  const [productCode, setProductCode] = useState<string | null>(null);
   const [amountText, setAmountText] = useState("");
   const [payCurrency, setPayCurrency] = useState<PayCurrency | null>(null);
   const [save, setSave] = useState(false);
@@ -478,15 +478,17 @@ function DetailsStep({
   const detectedPickId = useMemo(() => {
     const d = detectQ.data?.operator;
     if (!d) return null;
-    const exact = operators.find((o) => o.id === d.id);
+    const exact = operators.find((o) => o.code === d.code);
     const brand = d.name.split(" ")[0]?.toLowerCase();
     const sibling = brand ? operators.find((o) => o.name.toLowerCase().startsWith(brand)) : undefined;
-    return (exact ?? sibling)?.id ?? null;
+    return (exact ?? sibling)?.code ?? null;
   }, [detectQ.data, operators]);
   const operatorId = chosenOperatorId ?? detectedPickId;
 
-  const operator = operators.find((o) => o.id === operatorId) ?? null;
-  const biller = billersQ.data?.billers.find((b) => b.id === operatorId) ?? null;
+  const operator = operators.find((o) => o.code === operatorId) ?? null;
+  const biller = billersQ.data?.billers.find((b) => b.code === operatorId) ?? null;
+  const product = operator?.products.find((p) => p.code === productCode) ?? null;
+  const productAmount = product?.senderAmount ?? null;
 
   const useLocal = isPhone ? Boolean(operator?.denominationType === "RANGE" && operator.supportsLocalAmounts && operator.fxRate) : true;
   const typedAmount = Number(amountText.replace(/,/g, ""));
@@ -536,7 +538,8 @@ function DetailsStep({
           clientRequestId: requestId.current,
           service,
           countryCode: country,
-          operatorId,
+          operatorCode: operatorId,
+          productCode: product?.code,
           recipient: isPhone ? (detectQ.data?.e164 ?? recipient) : recipient,
           recipientLabel: label || undefined,
           amount,
@@ -591,14 +594,14 @@ function DetailsStep({
         ) : (
           <div className="grid max-h-72 grid-cols-1 gap-2 overflow-y-auto pr-0.5 sm:grid-cols-2">
             {(isPhone ? operators : billersQ.data!.billers).map((o) => {
-              const sel = o.id === operatorId;
+              const sel = o.code === operatorId;
               const logo = "logoUrl" in o ? o.logoUrl : null;
               return (
                 <button
-                  key={o.id}
+                  key={o.code}
                   onClick={() => {
-                    setOperatorId(o.id);
-                    setProductAmount(null);
+                    setOperatorId(o.code);
+                    setProductCode(null);
                     setAmountText("");
                   }}
                   className={cx("flex items-center gap-2.5 rounded-xl border p-3 text-left transition-colors", sel ? "border-accent bg-accent-soft" : "border-line bg-surface hover:border-line-strong")}
@@ -636,9 +639,9 @@ function DetailsStep({
               <div className="grid max-h-80 grid-cols-1 gap-2 overflow-y-auto sm:grid-cols-2">
                 {operator!.products.map((p) => (
                   <button
-                    key={p.senderAmount}
-                    onClick={() => setProductAmount(p.senderAmount)}
-                    className={cx("rounded-xl border p-3 text-left transition-colors", productAmount === p.senderAmount ? "border-accent bg-accent-soft" : "border-line bg-surface hover:border-line-strong")}
+                    key={p.code}
+                    onClick={() => setProductCode(p.code)}
+                    className={cx("rounded-xl border p-3 text-left transition-colors", productCode === p.code ? "border-accent bg-accent-soft" : "border-line bg-surface hover:border-line-strong")}
                   >
                     <span className="block text-[13px] font-medium text-fg">{p.description ?? (p.localAmount ? fmtMoney(p.localAmount, operator!.localCurrency) : fmtUsd(p.senderAmount))}</span>
                     <span className="num mt-0.5 block text-xs text-fg-3">
@@ -657,9 +660,9 @@ function DetailsStep({
             hint={
               isPhone
                 ? useLocal
-                  ? `Between ${fmtNum(operator!.localMinAmount)} and ${fmtNum(operator!.localMaxAmount)} ${operator!.localCurrency}`
-                  : `Between ${fmtUsd(operator!.minAmount)} and ${fmtUsd(operator!.maxAmount)}`
-                : `Between ${fmtNum(biller!.minLocalAmount)} and ${fmtNum(biller!.maxLocalAmount)} ${biller!.localCurrency}${biller!.localFee ? ` · provider fee ${fmtNum(biller!.localFee)} ${biller!.localCurrency}` : ""}`
+                  ? rangeHint(fmtNum, operator!.localMinAmount, operator!.localMaxAmount, ` ${operator!.localCurrency}`)
+                  : rangeHint(fmtUsd, operator!.minAmount, operator!.maxAmount, "")
+                : `${rangeHint(fmtNum, biller!.minLocalAmount, biller!.maxLocalAmount, ` ${biller!.localCurrency}`)}${biller!.localFee ? ` · provider fee ${fmtNum(biller!.localFee)} ${biller!.localCurrency}` : ""}`
             }
           >
             <div className="hero-surface rounded-[24px] px-4 py-6 text-center">
@@ -921,4 +924,12 @@ function ProcessingStep({ order: initial, onDone }: { order: UtilityOrderDTO; on
       ) : null}
     </Card>
   );
+}
+
+/** Amount-limit hint; providers that only reveal limits at validation show a generic note. */
+function rangeHint(fmt: (v: number) => string, min: number | null, max: number | null, suffix: string): string {
+  if (min !== null && max !== null) return `Between ${fmt(min)} and ${fmt(max)}${suffix}`;
+  if (min !== null) return `Minimum ${fmt(min)}${suffix}`;
+  if (max !== null) return `Up to ${fmt(max)}${suffix}`;
+  return "Limits are checked with the provider when you review.";
 }

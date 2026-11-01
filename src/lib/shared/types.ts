@@ -24,7 +24,7 @@ export interface RailStatus {
 
 export interface IntegrationStatus {
   database: { kind: string; persistent: boolean; ok: boolean; error?: string };
-  reloadly: { state: "sandbox" | "production" | "disconnected"; reason?: string };
+  utilities: { provider: "flutterwave" | "reloadly" | null; state: "sandbox" | "production" | "disconnected"; reason?: string };
   nimiq: { network: "mainnet" | "testnet"; merchantConfigured: boolean; rpcConfigured: boolean };
   polygon: { merchantConfigured: boolean; rpcUrlHost: string };
   rails: Record<PayCurrency, RailStatus>;
@@ -40,7 +40,7 @@ export interface ApiErrorBody {
 }
 
 // ---------------------------------------------------------------------------
-// Utilities catalogue (normalised from Reloadly)
+// Utilities catalogue (normalised from the active provider: Flutterwave or Reloadly)
 // ---------------------------------------------------------------------------
 
 export interface CountryServices {
@@ -53,6 +53,8 @@ export interface CountryServices {
 }
 
 export interface OperatorProduct {
+  /** Provider product code (Flutterwave item_code; Reloadly fixed amount). */
+  code: string;
   /** Amount in the provider account (sender) currency. */
   senderAmount: number;
   /** Amount in local currency where known. */
@@ -61,7 +63,8 @@ export interface OperatorProduct {
 }
 
 export interface OperatorDTO {
-  id: number;
+  /** Provider operator code (Flutterwave biller code; Reloadly operator id). */
+  code: string;
   name: string;
   logoUrl: string | null;
   isData: boolean;
@@ -81,7 +84,8 @@ export interface OperatorDTO {
 }
 
 export interface BillerDTO {
-  id: number;
+  /** Provider biller code (Flutterwave "<biller_code>:<item_code>"; Reloadly biller id). */
+  code: string;
   name: string;
   countryCode: string;
   type: string;
@@ -115,7 +119,7 @@ export interface UtilityOrderDTO {
   environment: "sandbox" | "production";
   service: UtilityService;
   countryCode: string;
-  operatorId: number;
+  operatorCode: string;
   operatorName: string;
   recipient: string;
   recipientLabel: string | null;

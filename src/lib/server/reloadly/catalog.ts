@@ -92,6 +92,7 @@ export function normaliseOperator(op: RawOperator): OperatorDTO {
   const products: OperatorProduct[] = fixed.map((amount, i) => {
     const localAmount = pairByIndex ? localFixed[i] : fxRate ? Math.round(amount * fxRate * 100) / 100 : null;
     return {
+      code: amount.toFixed(2),
       senderAmount: amount,
       localAmount,
       description: lookupDesc(descs, amount) ?? (localAmount !== null ? lookupDesc(localDescs, localAmount) : null),
@@ -99,7 +100,7 @@ export function normaliseOperator(op: RawOperator): OperatorDTO {
   });
 
   return {
-    id,
+    code: String(id),
     name: op.name,
     logoUrl: op.logoUrls?.[0] ?? null,
     isData: Boolean(op.data),
@@ -131,7 +132,7 @@ function billerFx(b: RawBiller): number | null {
 
 export function normaliseBiller(b: RawBiller): BillerDTO {
   return {
-    id: b.id,
+    code: String(b.id),
     name: b.name,
     countryCode: (b.countryIsoCode ?? b.countryCode ?? "").toUpperCase(),
     type: b.type,
@@ -197,11 +198,11 @@ export async function electricityBillers(countryCode: string): Promise<BillerDTO
   });
 }
 
-export async function billerById(id: number): Promise<BillerDTO | null> {
+export async function billerById(id: number): Promise<(BillerDTO & { id: number }) | null> {
   const res = await reloadlyRequest<{ content?: RawBiller[] } | RawBiller[]>("utilities", "GET", `/billers?id=${id}`);
   const list = Array.isArray(res) ? res : res.content ?? [];
   const b = list.find((x) => x.id === id);
-  return b ? normaliseBiller(b) : null;
+  return b ? { ...normaliseBiller(b), id: b.id } : null;
 }
 
 export async function countryServices(countryCode: string): Promise<CountryServices> {

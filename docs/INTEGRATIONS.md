@@ -7,7 +7,7 @@ AuraPay runs **real integrations only**. There are no simulators and no demo dat
 | Sign-in | Nimiq Pay signs a one-time challenge; server verifies the Ed25519 signature and derives the address | Signature |
 | NIM payments | `sendBasicTransactionWithData` with an order-reference memo | Nimiq JSON-RPC (`getTransactionByHash`) |
 | USDT payments | ERC-20 `transfer` on Polygon from a signature-verified EVM wallet | Polygon receipt + `Transfer` log |
-| Airtime / data / electricity | Reloadly (production by default; sandbox labelled TEST) | Reloadly API |
+| Airtime / data / electricity | Flutterwave Bills v3 (test keys labelled TEST); Reloadly as an alternative | Flutterwave / Reloadly API |
 | Investing | Tokenised stocks bought through CoW Protocol (CoW Swap widget) by the user's wallet | CoW order book + on-chain balances |
 | Borrowing | Aave V4 MAG7 spoke on Base: supply stock tokens, borrow USDC | Aave contracts + tx receipts |
 | Prices | CoinGecko (NIM, USDT, tokenised stocks); optional Finnhub / Twelve Data for listed shares | — |
@@ -38,9 +38,14 @@ address   = userFriendly(blake2b256(publicKey)[0..20])  // "NQ" + IBAN check dig
 
 **EVM wallet linking.** Nimiq Pay also injects an EVM wallet (`window.ethereum`). It is linked to the account only after `personal_sign` of a server challenge, verified with viem. USDT payments, stock orders and Aave actions are accepted only from verified addresses.
 
-## 2. Utility payments (Reloadly)
+## 2. Utility payments (Flutterwave Bills, or Reloadly)
 
-Reloadly does not accept crypto, so AuraPay is the merchant. Users pay AuraPay; AuraPay pays Reloadly from its prefunded USD wallet.
+Bill providers don't accept crypto, so AuraPay is the merchant. Users pay AuraPay; AuraPay pays the provider from its prefunded balance.
+
+The order engine (`src/lib/server/orders/utility.ts`) owns quotes, payment verification, the state machine and refunds. Providers sit behind one interface (`src/lib/server/utilities/provider.ts`): catalogue, pricing, submit, poll.
+
+* **Flutterwave** (`utilities/flutterwave.ts`): catalogue from `GET /v3/bill-categories?country=XX&airtime|data_bundle|power=1`; phone/meter checked with `GET /v3/bill-items/{item}/validate` before quoting (meter customer name shown); USD cost from `GET /v3/transfers/rates` for the exact local amount + fee; `POST /v3/billers/{biller}/items/{item}/payment` with `reference` = order ref (Flutterwave rejects reused references); status and electricity tokens from `GET /v3/bills/{ref}`. Flutterwave cannot look up a number's network, so the user picks it.
+* **Reloadly** (`utilities/reloadly.ts`): operator auto-detect, `/topups`, `/pay`, with `customIdentifier`/`referenceId` = order ref.
 
 ```
 quote ──► wallet payment ──► POST tx hash ──► on-chain verification ──► paid
@@ -48,10 +53,10 @@ paid ──(conditional UPDATE, exactly once)──► fulfilling ──► succ
 requires_review ──(admin, refund tx verified on-chain)──► refunded
 ```
 
-* Prices are recomputed server-side from fresh Reloadly data; quotes expire after 10 minutes.
+* Prices are recomputed server-side from fresh provider data; quotes expire after 10 minutes.
 * NIM: recipient, amount (≥ quote), memo (`AuraPay <ref>`), execution result, timestamp and confirmations are checked.
 * USDT: the receipt must succeed and carry a `Transfer` from the verified payer to the merchant for **exactly** the quoted amount. The last decimals tag the order, because ERC-20 transfers carry no memo.
-* A tx hash can pay only one order (`payments (chain, tx_hash)` is unique). Reloadly's `customIdentifier`/`referenceId` is the order ref.
+* A tx hash can pay only one order (`payments (chain, tx_hash)` is unique). The provider reference is the order ref, so a retry can't buy twice.
 * A verified payment whose delivery fails or is uncertain goes to `requires_review`, never silently to `failed`. Refunds are sent by an operator from the merchant wallet and recorded only after on-chain verification (`/api/admin/orders/*`).
 * Safety rule: sandbox (test) top-ups are never funded with real money unless `ALLOW_REAL_PAYMENTS_FOR_SANDBOX=true`.
 

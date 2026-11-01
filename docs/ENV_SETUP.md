@@ -40,20 +40,24 @@ Find it in Vercel → your project → **Domains**. Use your custom domain if yo
 
 ## 2. Pay: airtime, data and electricity
 
-### `RELOADLY_CLIENT_ID`, `RELOADLY_CLIENT_SECRET`, `RELOADLY_MODE`
+### `FLUTTERWAVE_SECRET_KEY`
 
-1. Sign up at <https://www.reloadly.com> and log in to the dashboard.
-2. Open **Developers → API Settings**.
-3. For testing, switch the dashboard to **Test mode** and copy the *test* Client ID and Client Secret. Test top-ups are free and nothing is delivered.
-4. For real top-ups, complete Reloadly's business verification, fund your Reloadly wallet, and use the *live* credentials.
+Flutterwave Bills delivers airtime, data bundles and electricity (prepaid/postpaid meters).
+
+1. Sign up at <https://dashboard.flutterwave.com/signup> and log in.
+2. Switch the dashboard to **Test mode** (toggle at the top).
+3. Open **Settings → API Keys** and copy the **Secret key**. Test keys start with `FLWSECK_TEST-`.
+4. For real top-ups: complete Flutterwave's business verification (KYC), switch to **Live mode**, copy the live secret key (`FLWSECK-…`), and fund your Flutterwave balance in the local currency of the countries you serve (e.g. NGN). Bills are paid from that balance.
 
 ```
-RELOADLY_CLIENT_ID=...
-RELOADLY_CLIENT_SECRET=...
-RELOADLY_MODE=sandbox        # use "production" with live credentials
+FLUTTERWAVE_SECRET_KEY=FLWSECK_TEST-xxxxxxxxxxxxxxxxxxxx-X
 ```
 
-The Reloadly account currency must be **USD**; AuraPay prices everything in USD.
+AuraPay detects test vs live from the key: a `FLWSECK_TEST-` key runs in test mode (orders labelled TEST, nothing delivered). Only the secret key is needed; it is used server-side only. The public and encryption keys are not used.
+
+Prices: Flutterwave charges bills in local currency. AuraPay converts the exact amount (plus any biller fee) to USD with Flutterwave's own rate (`/v3/transfers/rates`), then adds the AuraPay fee.
+
+*Alternative:* AuraPay still supports Reloadly (`RELOADLY_CLIENT_ID`, `RELOADLY_CLIENT_SECRET`, `RELOADLY_MODE`). If both are set, Flutterwave is used unless `UTILITY_PROVIDER=reloadly`.
 
 ### `NIMIQ_MERCHANT_ADDRESS`, `NIMIQ_NETWORK`, `NIMIQ_RPC_URL`: receive NIM
 
@@ -61,8 +65,8 @@ The address where customers' NIM payments arrive. It's your own wallet: AuraPay 
 
 1. In Nimiq Pay, open your account and copy your address (`NQ.. .... ....`). A dedicated business account is best.
 2. Pick the network:
-   * **Testing (with `RELOADLY_MODE=sandbox`):** use `testnet`. Sandbox top-ups can only be paid with free testnet NIM. In Nimiq Pay, long-press Settings for 10 seconds to switch to testnet and tap **Get free NIM**. Your testnet address is what goes in `NIMIQ_MERCHANT_ADDRESS`.
-   * **Live (with `RELOADLY_MODE=production`):** use `mainnet`.
+   * **Testing (with a `FLWSECK_TEST-` key):** use `testnet`. Test top-ups can only be paid with free testnet NIM. In Nimiq Pay, long-press Settings for 10 seconds to switch to testnet and tap **Get free NIM**. Your testnet address is what goes in `NIMIQ_MERCHANT_ADDRESS`.
+   * **Live (with a live `FLWSECK-` key):** use `mainnet`.
 3. `NIMIQ_RPC_URL` is a Nimiq node that AuraPay uses to check payments on-chain.
    * Mainnet: you can leave it empty; AuraPay then uses the open server `https://rpc.nimiqwatch.com` (fine for a hackathon, rate-limited).
    * Testnet: there's no default. Pick a testnet server from <https://www.nimiq.dev/rpc/open-servers> or run your own node (<https://www.nimiq.dev/rpc/rpc-node-setup>).
@@ -81,7 +85,7 @@ The `0x…` address that receives USDT on Polygon. Your Nimiq Pay EVM (USDT) add
 POLYGON_MERCHANT_ADDRESS=0x...
 ```
 
-USDT exists only on Polygon *mainnet*, so it is disabled while `RELOADLY_MODE=sandbox`. That stops real money from paying for test top-ups.
+USDT exists only on Polygon *mainnet*, so it is disabled while the utility provider is in test mode. That stops real money from paying for test top-ups.
 
 ---
 
@@ -133,9 +137,7 @@ Without Finnhub/Twelve Data, prices and charts use the live market price of the 
 APP_URL=https://your-project.vercel.app
 DATABASE_URL=postgresql://...:6543/postgres
 DB_AUTO_MIGRATE=true
-RELOADLY_CLIENT_ID=...
-RELOADLY_CLIENT_SECRET=...
-RELOADLY_MODE=sandbox
+FLUTTERWAVE_SECRET_KEY=FLWSECK_TEST-...
 NIMIQ_NETWORK=testnet
 NIMIQ_MERCHANT_ADDRESS=NQ.. (testnet)
 NIMIQ_RPC_URL=https://... (testnet RPC)

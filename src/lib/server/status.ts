@@ -7,6 +7,7 @@ import { errorMessage } from "./log";
 import { marketDataSource } from "./market";
 import { paymentRails } from "./rails";
 import { getRatesSafe } from "./rates";
+import { utilityEnvironment } from "./utilities/provider";
 
 export async function integrationStatus(): Promise<IntegrationStatus> {
   let database: IntegrationStatus["database"];
@@ -21,9 +22,9 @@ export async function integrationStatus(): Promise<IntegrationStatus> {
 
   return {
     database,
-    reloadly: config.reloadly.configured
-      ? { state: config.reloadly.mode }
-      : { state: "disconnected", reason: "RELOADLY_CLIENT_ID / RELOADLY_CLIENT_SECRET not set." },
+    utilities: config.utilityProvider
+      ? { provider: config.utilityProvider, state: utilityEnvironment() }
+      : { provider: null, state: "disconnected", reason: "FLUTTERWAVE_SECRET_KEY not set." },
     nimiq: { network: config.nimiq.network, merchantConfigured: Boolean(config.nimiq.merchantAddress), rpcConfigured: Boolean(config.nimiq.rpcUrl) },
     polygon: { merchantConfigured: Boolean(config.polygon.merchantAddress), rpcUrlHost: new URL(config.polygon.rpcUrl).host },
     rails: paymentRails(),

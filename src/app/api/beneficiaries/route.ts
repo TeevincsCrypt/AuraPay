@@ -1,4 +1,4 @@
-import { getDb, iso, numOrNull } from "@/lib/server/db";
+import { getDb, iso } from "@/lib/server/db";
 import { enforceRateLimit, handler, json } from "@/lib/server/http";
 import { requireUser } from "@/lib/server/session";
 
@@ -19,7 +19,7 @@ export const GET = handler(async (req) => {
       countryCode: String(r.country_code),
       label: String(r.label),
       value: String(r.value),
-      operatorId: numOrNull(r.operator_id),
+      operatorCode: r.operator_code != null ? String(r.operator_code) : r.operator_id != null ? String(r.operator_id) : null,
       operatorName: (r.operator_name as string) ?? null,
       lastUsedAt: iso(r.last_used_at),
     })),

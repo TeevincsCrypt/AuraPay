@@ -62,6 +62,26 @@ export const config = {
     },
   },
 
+  flutterwave: {
+    secretKey: env("FLUTTERWAVE_SECRET_KEY"),
+    /** Test keys (FLWSECK_TEST-…) run in Flutterwave's test mode; nothing is delivered. */
+    get mode(): ReloadlyMode {
+      return (this.secretKey ?? "").startsWith("FLWSECK_TEST") ? "sandbox" : "production";
+    },
+    get configured() {
+      return Boolean(this.secretKey);
+    },
+  },
+
+  /** Active utility provider: UTILITY_PROVIDER if set, else whichever has credentials (Flutterwave first). */
+  get utilityProvider(): "flutterwave" | "reloadly" | null {
+    const forced = env("UTILITY_PROVIDER")?.toLowerCase();
+    if (forced === "flutterwave" || forced === "reloadly") return forced;
+    if (env("FLUTTERWAVE_SECRET_KEY")) return "flutterwave";
+    if (env("RELOADLY_CLIENT_ID") && env("RELOADLY_CLIENT_SECRET")) return "reloadly";
+    return null;
+  },
+
   nimiq: {
     network: nimiqNetwork,
     merchantAddress: env("NIMIQ_MERCHANT_ADDRESS"),
@@ -86,7 +106,7 @@ export const config = {
     42161: env("ARBITRUM_RPC_URL") ?? "https://arbitrum-one-rpc.publicnode.com",
   } as Record<number, string>,
 
-  /** Allow real-value payments to fund Reloadly SANDBOX (test) top-ups. Off by default. */
+  /** Allow real-value payments to fund SANDBOX (test) top-ups. Off by default. */
   allowRealPaymentsForSandbox: bool("ALLOW_REAL_PAYMENTS_FOR_SANDBOX"),
 
   pricing: {

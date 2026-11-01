@@ -171,7 +171,7 @@ export function Badge({ children, tone = "neutral", className }: { children: Rea
   return <span className={cx("inline-flex h-6 items-center gap-1 rounded-full px-2.5 text-[11.5px] font-semibold whitespace-nowrap", TONES[tone], className)}>{children}</span>;
 }
 
-/** Reloadly sandbox transactions are test transactions and must be labelled. */
+/** Provider test-mode transactions are test transactions and must be labelled. */
 export const TestBadge = () => <Badge tone="mint">Test · Sandbox</Badge>;
 
 // ---------------------------------------------------------------------------

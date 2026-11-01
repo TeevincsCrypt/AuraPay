@@ -4,7 +4,7 @@
 
 AuraPay is a Nimiq Pay Mini App for African users:
 
-1. **Pay**: airtime, mobile data and electricity in Nigeria, Ghana, Kenya, Uganda, South Africa and Tanzania, paid with **NIM** or **USDT** (fulfilled by Reloadly).
+1. **Pay**: airtime, mobile data and electricity in Nigeria, Ghana, Kenya, Uganda, South Africa and Tanzania, paid with **NIM** or **USDT** (fulfilled by Flutterwave Bills; Reloadly also supported).
 2. **Invest**: tokenised US stocks (NVIDIA, Apple, Microsoft, Tesla, Amazon, Alphabet, Meta, AMD, Netflix, Coinbase), bought through CoW Protocol and held in your own wallet.
 3. **Borrow**: USDC against your stock tokens through Aave V4 on Base, without selling them.
 
@@ -25,7 +25,7 @@ src/app/                pages: landing/home, invest, borrow, pay, activity, stat
 src/components/         design system (ui.tsx), charts, shell (floating nav), landing, auth, pay, invest
 src/lib/client/         wallet provider (Nimiq + EVM), session (sign-in), API client, hooks
 src/lib/server/auth/    Nimiq signature verification, challenges (local/remote/EVM link)
-src/lib/server/         config, db, sessions, Reloadly, payment verification, orders, market data,
+src/lib/server/         config, db, sessions, utility providers (Flutterwave, Reloadly), payment verification, orders, market data,
                         investing (CoW + on-chain holdings), lending (Aave V4), EVM RPC, ledger
 src/lib/shared/         types, stock-token registry, Aave constants/ABI, countries, formatting
 supabase/migrations/    schema + auth/real-mode migration (RLS deny-by-default)
@@ -45,25 +45,25 @@ Without `DATABASE_URL`, development uses embedded PGlite (`.data/pglite`). Open 
 | Feature | Needs |
 |---|---|
 | Sign-in | a database (`DATABASE_URL` in production) and `APP_URL` |
-| Utilities | `RELOADLY_CLIENT_ID`, `RELOADLY_CLIENT_SECRET` (`RELOADLY_MODE=sandbox` for testing) |
+| Utilities | `FLUTTERWAVE_SECRET_KEY` (a `FLWSECK_TEST-…` key for testing), or Reloadly credentials |
 | Pay with NIM | `NIMIQ_MERCHANT_ADDRESS`, `NIMIQ_NETWORK`, `NIMIQ_RPC_URL` |
 | Pay with USDT | `POLYGON_MERCHANT_ADDRESS` |
 | Prices, investing, borrowing | nothing extra (public CoinGecko + public RPCs; set your own RPCs/keys for volume) |
 | Listed share prices | optional `FINNHUB_API_KEY`, `TWELVEDATA_API_KEY` |
 
-To test payments without real money, use Reloadly **sandbox** with Nimiq **testnet** (`RELOADLY_MODE=sandbox`, `NIMIQ_NETWORK=testnet`). Get free testnet NIM in Nimiq Pay's testnet mode (long-press settings for 10 s). Sandbox orders are labelled TEST. USDT (Polygon mainnet) is disabled for sandbox top-ups.
+To test payments without real money, use a Flutterwave **test** key (`FLWSECK_TEST-…`) with Nimiq **testnet** (`NIMIQ_NETWORK=testnet`). Get free testnet NIM in Nimiq Pay's testnet mode (long-press settings for 10 s). Test orders are labelled TEST. USDT (Polygon mainnet) is disabled for test top-ups.
 
 ## Deploy (Vercel + Supabase)
 
 1. Create a Supabase project. Apply migrations with `supabase db push` (or set `DB_AUTO_MIGRATE=true`).
-2. Import the repo in Vercel and set the variables — step-by-step guide in [`docs/ENV_SETUP.md`](docs/ENV_SETUP.md). At minimum `APP_URL`, `DATABASE_URL` (transaction pooler, port 6543) with `DB_AUTO_MIGRATE=true`, the Reloadly credentials, and the NIM/USDT merchant settings.
+2. Import the repo in Vercel and set the variables — step-by-step guide in [`docs/ENV_SETUP.md`](docs/ENV_SETUP.md). At minimum `APP_URL`, `DATABASE_URL` (transaction pooler, port 6543) with `DB_AUTO_MIGRATE=true`, `FLUTTERWAVE_SECRET_KEY`, and the NIM/USDT merchant settings.
 3. Deploy, check `/status`, then open `https://nimpay.app/miniapps/open/<your-domain>` on a phone.
 
 For production, use your own Nimiq node or RPC provider (`NIMIQ_RPC_URL`) and dedicated EVM RPCs (`BASE_RPC_URL`, `ARBITRUM_RPC_URL`, `ETHEREUM_RPC_URL`, `POLYGON_RPC_URL`). The open defaults are rate-limited.
 
 ## Tests
 
-All external services are mocked locally by `scripts/mock-providers.mjs` (shaped after Reloadly's OpenAPI specs, Nimiq/EVM JSON-RPC, CoW's order book and Aave V4's ABI). The suites enable them with `AURAPAY_TEST_MODE=true` plus the override URLs listed in `.env.example`.
+All external services are mocked locally by `scripts/mock-providers.mjs` (shaped after Flutterwave's v3 Bills API, Reloadly's OpenAPI specs, Nimiq/EVM JSON-RPC, CoW's order book and Aave V4's ABI). The suites enable them with `AURAPAY_TEST_MODE=true` plus the override URLs listed in `.env.example`.
 
 ```bash
 npm run build
@@ -75,7 +75,9 @@ AURAPAY_TEST_MODE=true RELOADLY_CLIENT_ID=mock-client RELOADLY_CLIENT_SECRET=moc
   RELOADLY_AUTH_URL_OVERRIDE=http://localhost:4010/auth/oauth/token RELOADLY_AIRTIME_URL_OVERRIDE=http://localhost:4010/airtime \
   RELOADLY_UTILITIES_URL_OVERRIDE=http://localhost:4010/utilities COINGECKO_URL_OVERRIDE=http://localhost:4010/coingecko \
   EVM_RPC_URL_OVERRIDE=http://localhost:4010/evm COW_API_URL_OVERRIDE=http://localhost:4010/cow npm start &
-npm run test:api   # 34 tests: sign-in (local, remote, tampering, replay), EVM linking, NIM/USDT verification,
+# Runs against whichever utility provider is configured. For Flutterwave, replace the RELOADLY_* vars with
+#   FLUTTERWAVE_SECRET_KEY=FLWSECK_TEST-mock-X FLUTTERWAVE_URL_OVERRIDE=http://localhost:4010/flw
+npm run test:api   # 35 tests: sign-in (local, remote, tampering, replay), EVM linking, NIM/USDT verification,
                    # idempotency, exactly-once fulfilment, refunds, isolation, holdings, CoW orders, Aave
 npm run test:ui    # Playwright: landing, QR sign-in, simulated Nimiq Pay host with real signatures,
                    # every page at mobile + desktop, keypad + slide-to-pay purchase, borrow, buy sheet

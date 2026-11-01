@@ -56,6 +56,13 @@ function assert(cond, msg) {
 }
 const eq = (a, b, msg) => assert(a === b, `${msg}: expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`);
 
+// The suite runs against whichever utility provider the server is configured with.
+const PROVIDER = (await (await fetch(APP + "/api/status")).json()).utilities.provider;
+const CODES = PROVIDER === "flutterwave"
+  ? { airtime: "BIL099:AT099", data: "BIL108", dataProduct: "MD138", electricity: "BIL113:UB157" }
+  : { airtime: "341", data: "645", dataProduct: "1.34", electricity: "9" };
+console.log(`Utility provider: ${PROVIDER}`);
+
 const mock = async (path, body) =>
   (await fetch(MOCK + path, { method: body ? "POST" : "GET", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined })).json();
 const nimHash = () => randomBytes(32).toString("hex");
@@ -112,7 +119,7 @@ async function registerPolyTx(order, { units, from = PAYER_POLY, hash = polyHash
 
 async function createOrder(c, overrides = {}) {
   const r = await c.post("/api/orders", {
-    clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorId: 341, recipient: "08031234567",
+    clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorCode: CODES.airtime, recipient: "08031234567",
     amount: 1000, amountCurrency: "local", payCurrency: "NIM", ...overrides,
   });
   assert(r.status === 201, `create order ${r.status} ${JSON.stringify(r.json)}`);
@@ -207,7 +214,8 @@ await test("sign out revokes the session", async () => {
 console.log("\nStatus & catalogue");
 await test("status reports live integrations only", async () => {
   const { json } = await c.get("/api/status");
-  eq(json.reloadly.state, "sandbox", "reloadly");
+  eq(json.utilities.state, "sandbox", "utilities");
+  eq(json.utilities.provider, PROVIDER, "provider");
   eq(json.rails.NIM.available, true, "NIM rail");
   eq(json.rails.USDT.available, true, "USDT rail");
   eq("DEMO" in json.rails, false, "no simulated rail");
@@ -224,7 +232,8 @@ await test("countries list only provider-supported services", async () => {
 await test("phone validation + operator auto-detect", async () => {
   const ok = await c.get("/api/utilities/detect?country=NG&phone=08031234567");
   eq(ok.json.e164, "2348031234567", "e164");
-  eq(ok.json.operator?.name, "MTN Nigeria", "detected");
+  // Reloadly detects the network; Flutterwave has no lookup, so the user picks it.
+  eq(ok.json.operator?.name ?? null, PROVIDER === "reloadly" ? "MTN Nigeria" : null, "detected");
   eq((await c.get("/api/utilities/detect?country=NG&phone=12345")).json.valid, false, "invalid");
 });
 
@@ -246,19 +255,19 @@ await test("verified payment → exactly one sandbox top-up", async () => {
   eq((await mock("/_test/counters")).topupCalls - before.topupCalls, 1, "one topup");
 });
 await test("idempotent create with same clientRequestId", async () => {
-  const body = { clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorId: 341, recipient: "08031234567", amount: 500, amountCurrency: "local", payCurrency: "NIM" };
+  const body = { clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorCode: CODES.airtime, recipient: "08031234567", amount: 500, amountCurrency: "local", payCurrency: "NIM" };
   eq((await c.post("/api/orders", body)).json.order.id, (await c.post("/api/orders", body)).json.order.id, "same order");
 });
 await test("simulated payments no longer exist", async () => {
-  const r = await c.post("/api/orders", { clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorId: 341, recipient: "08031234567", amount: 1000, amountCurrency: "local", payCurrency: "DEMO" });
+  const r = await c.post("/api/orders", { clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorCode: CODES.airtime, recipient: "08031234567", amount: 1000, amountCurrency: "local", payCurrency: "DEMO" });
   eq(r.status, 422, "status");
 });
 await test("invalid phone and out-of-range amount rejected", async () => {
-  eq((await c.post("/api/orders", { clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorId: 341, recipient: "0123", amount: 1000, amountCurrency: "local", payCurrency: "NIM" })).status, 422, "phone");
-  eq((await c.post("/api/orders", { clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorId: 341, recipient: "08031234567", amount: 50, amountCurrency: "local", payCurrency: "NIM" })).status, 422, "amount");
+  eq((await c.post("/api/orders", { clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorCode: CODES.airtime, recipient: "0123", amount: 1000, amountCurrency: "local", payCurrency: "NIM" })).status, 422, "phone");
+  eq((await c.post("/api/orders", { clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorCode: CODES.airtime, recipient: "08031234567", amount: 50, amountCurrency: "local", payCurrency: "NIM" })).status, 422, "amount");
 });
 await test("data bundle (FIXED) purchase", async () => {
-  const o = await createOrder(c, { service: "data", operatorId: 645, amount: 1.34, amountCurrency: "sender" });
+  const o = await createOrder(c, { service: "data", operatorCode: CODES.data, productCode: CODES.dataProduct, amount: 1.34, amountCurrency: "sender" });
   eq(o.productDescription, "3GB · 30 days", "product");
   eq((await payNim(c, o)).status, "successful", "status");
 });
@@ -290,7 +299,7 @@ await test("pending until confirmed; concurrent polls fulfil exactly once", asyn
 
 console.log("\nUSDT payments — verified wallet + Polygon receipt");
 await test("USDT payer must be a signature-verified wallet", async () => {
-  const r = await c.post("/api/orders", { clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorId: 341, recipient: "08031234567", amount: 1000, amountCurrency: "local", payCurrency: "USDT", payerAddress: "0x3333333333333333333333333333333333333333" });
+  const r = await c.post("/api/orders", { clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorCode: CODES.airtime, recipient: "08031234567", amount: 1000, amountCurrency: "local", payCurrency: "USDT", payerAddress: "0x3333333333333333333333333333333333333333" });
   eq(r.json.error?.code, "PAYER_NOT_VERIFIED", "code");
 });
 await test("exact USDT transfer from the verified wallet is fulfilled", async () => {
@@ -306,11 +315,17 @@ await test("USDT amount mismatch → review", async () => {
 
 console.log("\nElectricity");
 await test("electricity payment → token after provider processing", async () => {
-  const o = await createOrder(c, { service: "electricity", operatorId: 9, recipient: "04223568280", amount: 5000, amountCurrency: "local" });
+  const o = await createOrder(c, { service: "electricity", operatorCode: CODES.electricity, recipient: "04223568280", amount: 5000, amountCurrency: "local" });
   eq(o.quote.providerCostUsd, 3.4, "(5000 + 100 fee) / 1500");
   eq((await payNim(c, o)).status, "provider_pending", "processing");
   const done = await waitFor(c, o.id, (x) => x.status === "successful", 25_000);
   eq(done.deliveryDetails.token, "1234-5678-9012-3456-7890", "token");
+});
+
+await test("meter is verified with the provider before quoting", async () => {
+  const r = await c.post("/api/orders", { clientRequestId: randomUUID(), service: "electricity", countryCode: "NG", operatorCode: CODES.electricity, recipient: "00000000", amount: 5000, amountCurrency: "local", payCurrency: "NIM" });
+  if (PROVIDER === "flutterwave") eq(r.json.error?.code, "CUSTOMER_INVALID", "code");
+  else assert(r.status === 201 || r.status === 422, `status ${r.status}`);
 });
 
 console.log("\nFailure handling, refunds, isolation");
