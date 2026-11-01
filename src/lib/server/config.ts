@@ -13,6 +13,26 @@ function env(name: string): string | undefined {
   return v && v.trim() !== "" ? v.trim() : undefined;
 }
 
+/** Strips quotes people often paste around values in the Vercel UI. */
+function unquote(v: string | undefined): string | undefined {
+  if (!v) return v;
+  const m = v.match(/^(['"])(.*)\1$/);
+  return m ? m[2].trim() || undefined : v;
+}
+
+/**
+ * Postgres connection string. DATABASE_URL is preferred; the names created by the
+ * Supabase ↔ Vercel integration (POSTGRES_URL, the pooled connection) are accepted too.
+ */
+const DB_URL_VARS = ["DATABASE_URL", "POSTGRES_URL", "SUPABASE_DB_URL"] as const;
+function databaseUrl(): { url?: string; from?: string } {
+  for (const name of DB_URL_VARS) {
+    const url = unquote(env(name));
+    if (url) return { url, from: name };
+  }
+  return {};
+}
+
 function bool(name: string, fallback = false): boolean {
   const v = env(name);
   if (!v) return fallback;
@@ -46,7 +66,8 @@ export const config = {
   /** Public origin used in sign-in messages and Nimiq Pay deep links, e.g. https://aurapay.app */
   appUrl: env("APP_URL"),
 
-  databaseUrl: env("DATABASE_URL"),
+  databaseUrl: databaseUrl().url,
+  databaseUrlSource: databaseUrl().from,
   /** Embedded PGlite is for local development only. */
   pgliteDir: env("PGLITE_DIR") === "memory" ? undefined : env("PGLITE_DIR") ?? ".data/pglite",
   allowEmbeddedDb: !isProdRuntime || testMode,

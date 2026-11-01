@@ -8,7 +8,7 @@ After redeploying, open `https://<your-domain>/status`. It shows which integrati
 
 ## 1. Required: the app won't work without these
 
-### `DATABASE_URL` + `DB_AUTO_MIGRATE`
+### `DATABASE_URL`
 
 AuraPay stores accounts, orders and activity in Postgres. Supabase's free tier is enough.
 
@@ -21,10 +21,18 @@ AuraPay stores accounts, orders and activity in Postgres. Supabase's free tier i
 
 ```
 DATABASE_URL=postgresql://postgres.abcdefghijkl:yourpassword@aws-0-us-east-1.pooler.supabase.com:6543/postgres
-DB_AUTO_MIGRATE=true
 ```
 
-`DB_AUTO_MIGRATE=true` makes AuraPay create its tables on first use. Alternatively, run `supabase db push` yourself and leave it `false`.
+AuraPay creates its tables on first use (each migration runs once). Set `DB_AUTO_MIGRATE=false` only if you apply migrations yourself with `supabase db push`.
+
+If you connected Supabase through Vercel's **Supabase integration** instead, you don't need to add anything: AuraPay also reads the `POSTGRES_URL` it creates.
+
+**If the app still says "the database (DATABASE_URL) is not set":**
+
+* In Vercel → **Settings → Environment Variables**, check that the variable is ticked for **Production** (not only Preview/Development) and that the name is exactly `DATABASE_URL`.
+* Paste the value without quotes or spaces.
+* **Redeploy.** Vercel only applies new variables to new deployments: **Deployments** → latest → **⋯** → **Redeploy**.
+* Open the production domain, not an older deployment URL.
 
 ### `APP_URL`
 
@@ -136,7 +144,6 @@ Without Finnhub/Twelve Data, prices and charts use the live market price of the 
 ```
 APP_URL=https://your-project.vercel.app
 DATABASE_URL=postgresql://...:6543/postgres
-DB_AUTO_MIGRATE=true
 FLUTTERWAVE_SECRET_KEY=FLWSECK_TEST-...
 NIMIQ_NETWORK=testnet
 NIMIQ_MERCHANT_ADDRESS=NQ.. (testnet)

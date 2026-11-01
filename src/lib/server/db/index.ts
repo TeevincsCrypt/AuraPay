@@ -101,6 +101,9 @@ async function migrate({ db, kind }: DbState): Promise<void> {
     const script = await readFile(path.join(dir, file), "utf8");
     log.info("db.migrate", { file, kind });
     await db.transaction(async (tx) => {
+      // Serialise concurrent cold starts; the loser sees the migration as applied and skips it.
+      if (kind === "postgres") await tx.query("select pg_advisory_xact_lock(727274)");
+      if ((await tx.query("select 1 from schema_migrations where name = $1", [file])).length) return;
       await tx.exec(script);
       await tx.query("insert into schema_migrations (name) values ($1)", [file]);
     });
@@ -111,10 +114,16 @@ async function init(): Promise<DbState> {
   let state: DbState;
   if (config.databaseUrl) {
     state = await createPostgres(config.databaseUrl);
-    if (process.env.DB_AUTO_MIGRATE === "true") await migrate(state);
+    // On by default (tracked in schema_migrations, so each file runs once); DB_AUTO_MIGRATE=false opts out.
+    if (process.env.DB_AUTO_MIGRATE !== "false") await migrate(state);
   } else {
     if (!config.allowEmbeddedDb) {
-      throw new ConfigError("the database (DATABASE_URL) is not configured.");
+      // Names only, never values: helps tell a missing variable from one scoped to another environment.
+      const target = process.env.VERCEL_ENV ? `this ${process.env.VERCEL_ENV} deployment` : "this server";
+      log.error("db.not_configured", { vercelEnv: process.env.VERCEL_ENV ?? null, deployment: process.env.VERCEL_URL ?? null });
+      throw new ConfigError(
+        `the database (DATABASE_URL) is not set for ${target}. In Vercel, add it under Settings → Environment Variables with "${process.env.VERCEL_ENV === "preview" ? "Preview" : "Production"}" ticked, then redeploy.`,
+      );
     }
     state = await createPglite(config.pgliteDir);
     await migrate(state);

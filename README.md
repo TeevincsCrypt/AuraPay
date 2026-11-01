@@ -55,8 +55,8 @@ To test payments without real money, use a Flutterwave **test** key (`FLWSECK_TE
 
 ## Deploy (Vercel + Supabase)
 
-1. Create a Supabase project. Apply migrations with `supabase db push` (or set `DB_AUTO_MIGRATE=true`).
-2. Import the repo in Vercel and set the variables — step-by-step guide in [`docs/ENV_SETUP.md`](docs/ENV_SETUP.md). At minimum `APP_URL`, `DATABASE_URL` (transaction pooler, port 6543) with `DB_AUTO_MIGRATE=true`, `FLUTTERWAVE_SECRET_KEY`, and the NIM/USDT merchant settings.
+1. Create a Supabase project. Migrations apply automatically on first use (or run `supabase db push` and set `DB_AUTO_MIGRATE=false`).
+2. Import the repo in Vercel and set the variables — step-by-step guide in [`docs/ENV_SETUP.md`](docs/ENV_SETUP.md). At minimum `APP_URL`, `DATABASE_URL` (transaction pooler, port 6543; or the Supabase integration's `POSTGRES_URL`), `FLUTTERWAVE_SECRET_KEY`, and the NIM/USDT merchant settings.
 3. Deploy, check `/status`, then open `https://nimpay.app/miniapps/open/<your-domain>` on a phone.
 
 For production, use your own Nimiq node or RPC provider (`NIMIQ_RPC_URL`) and dedicated EVM RPCs (`BASE_RPC_URL`, `ARBITRUM_RPC_URL`, `ETHEREUM_RPC_URL`, `POLYGON_RPC_URL`). The open defaults are rate-limited.
