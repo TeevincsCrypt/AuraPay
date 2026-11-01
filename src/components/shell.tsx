@@ -35,7 +35,7 @@ export function Logo({ className, light, size = 32 }: { className?: string; ligh
         alt=""
         width={size}
         height={size}
-        className="shrink-0 rounded-[10px] shadow-[0_2px_8px_rgb(17_21_30/0.25)]"
+        className="shrink-0 object-contain"
         style={{ width: size, height: size }}
       />
       <span className={cx("text-[18px] font-semibold tracking-[-0.02em]", light ? "text-white" : "text-fg")}>AuraPay</span>
