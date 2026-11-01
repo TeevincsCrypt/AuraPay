@@ -16,6 +16,8 @@ const ICON = {
   wallet_payment: Wallet,
   refund: RotateCcw,
   bill_schedule: CalendarClock,
+  transfer_sent: ArrowUpRight,
+  transfer_received: ArrowDownLeft,
 } as const;
 
 export const CATEGORY_LABEL: Record<ActivityItem["category"], string> = {
@@ -28,6 +30,8 @@ export const CATEGORY_LABEL: Record<ActivityItem["category"], string> = {
   wallet_payment: "Wallet payment",
   refund: "Refund",
   bill_schedule: "Scheduled bills",
+  transfer_sent: "Sent",
+  transfer_received: "Received",
 };
 
 const STATUS_TEXT: Record<ActivityItem["status"], string> = {
@@ -45,7 +49,7 @@ export function amountText(i: ActivityItem): string {
   return `${fmtNum(i.amount, 4)} ${i.currency}`;
 }
 
-const INCOMING = new Set<ActivityItem["category"]>(["loan_disbursement", "refund", "collateral_withdrawal"]);
+const INCOMING = new Set<ActivityItem["category"]>(["loan_disbursement", "refund", "collateral_withdrawal", "transfer_received"]);
 
 export function ActivityRow({ item }: { item: ActivityItem }) {
   const Icon = ICON[item.category] ?? ArrowDownLeft;

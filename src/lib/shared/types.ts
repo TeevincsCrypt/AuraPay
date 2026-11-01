@@ -34,9 +34,6 @@ export interface IntegrationStatus {
   polygon: { merchantConfigured: boolean; rpcUrlHost: string };
   rails: Record<PayCurrency, RailStatus>;
   rates: { state: "live" | "unavailable"; source: string; nimUsd?: number; usdtUsd?: number; reason?: string };
-  marketData: { state: "live" | "unavailable"; provider: string; reason?: string };
-  investing: { state: "live" | "unavailable"; provider: string; reason: string };
-  lending: { state: "live" | "unavailable"; provider: string; reason: string };
   merchant: { nimAddress?: string; polygonAddress?: string };
 }
 
@@ -166,7 +163,9 @@ export type ActivityCategory =
   | "collateral_withdrawal"
   | "wallet_payment"
   | "refund"
-  | "bill_schedule";
+  | "bill_schedule"
+  | "transfer_sent"
+  | "transfer_received";
 
 export interface ActivityItem {
   id: string;
@@ -188,135 +187,6 @@ export interface ActivityItem {
   details: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
-}
-
-// ---------------------------------------------------------------------------
-// Markets & investing (real tokenised stocks)
-// ---------------------------------------------------------------------------
-
-export interface QuoteToken {
-  symbol: string;
-  chainId: number;
-  issuer: "Coinbase" | "xStocks";
-  address: string;
-  coingeckoId: string;
-}
-
-export interface StockQuote {
-  symbol: string;
-  name: string;
-  exchange: string;
-  sector: string;
-  description: string;
-  logoUrl: string | null;
-  price: number | null;
-  change: number | null;
-  changePercent: number | null;
-  dayHigh: number | null;
-  dayLow: number | null;
-  open: number | null;
-  previousClose: number | null;
-  asOf: string | null;
-  /** finnhub = listed share price; tokenized = market price of the tokenised stock. */
-  source: "finnhub" | "tokenized" | "unavailable";
-  token: QuoteToken | null;
-  tokenPriceUsd: number | null;
-}
-
-export interface PricePoint {
-  t: string; // ISO date
-  c: number;
-}
-
-export interface MarketStatus {
-  isOpen: boolean | null;
-  session: string | null;
-  source: "finnhub" | "unavailable";
-}
-
-export interface HoldingDTO {
-  symbol: string;
-  name: string;
-  tokenSymbol: string;
-  issuer: "Coinbase" | "xStocks";
-  chainId: number;
-  tokenAddress: string;
-  owner: string;
-  walletQuantity: number;
-  /** Supplied as collateral to Aave V4 (still owned by the user). */
-  suppliedQuantity: number;
-  quantity: number;
-  tokenPriceUsd: number | null;
-  valueUsd: number | null;
-  dayChangeUsd: number | null;
-  costBasisUsd: number | null;
-  unrealizedPnlUsd: number | null;
-}
-
-export interface PortfolioDTO {
-  evmAddresses: string[];
-  holdings: HoldingDTO[];
-  totals: {
-    valueUsd: number | null;
-    dayChangeUsd: number | null;
-    dayChangePercent: number | null;
-    costBasisUsd: number | null;
-    totalPnlUsd: number | null;
-    totalPnlPercent: number | null;
-  };
-  errors: string[];
-}
-
-export interface StockTradeDTO {
-  ref: string;
-  symbol: string;
-  orderUid: string;
-  chainId: number;
-  targetChainId: number | null;
-  status: "open" | "fulfilled" | "expired" | "cancelled" | "unknown";
-  sellAmount: number | null;
-  executedSellAmount: number | null;
-  executedBuyAmount: number | null;
-  createdAt: string;
-}
-
-// ---------------------------------------------------------------------------
-// Borrowing (Aave V4, MAG7 spoke on Base)
-// ---------------------------------------------------------------------------
-
-export interface LendingReserveDTO {
-  reserveId: number;
-  symbol: string; // underlying token symbol, e.g. NVDAc / USDC
-  ticker: string | null; // stock ticker for collateral reserves
-  underlying: string;
-  decimals: number;
-  priceUsd: number | null;
-  collateralFactor: number; // 0..1
-  borrowable: boolean;
-  paused: boolean;
-  frozen: boolean;
-  borrowApr: number | null; // 0..1, base drawn rate (excl. user risk premium)
-  walletBalance: number;
-  supplied: number;
-  usingAsCollateral: boolean;
-  debt: number;
-}
-
-export interface BorrowOverviewDTO {
-  available: boolean;
-  reason: string | null;
-  chainId: number;
-  spoke: string;
-  owner: string | null;
-  reserves: LendingReserveDTO[];
-  account: {
-    healthFactor: number | null;
-    collateralUsd: number;
-    debtUsd: number;
-    avgCollateralFactor: number | null;
-    riskPremiumBps: number | null;
-    borrowCapacityUsd: number;
-  } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -362,4 +232,39 @@ export interface BillScheduleDTO {
   paymentTxHash: string | null;
   runs: ScheduleRunDTO[];
   createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Usernames & transfers (wallet to wallet; AuraPay never holds the funds)
+// ---------------------------------------------------------------------------
+
+export interface UsernameProfile {
+  username: string;
+  /** Where NIM sent to this username arrives (their Nimiq Pay address). */
+  nimAddress: string;
+  /** Where USDT (Polygon) sent to this username arrives; null if they haven't verified one. */
+  polygonAddress: string | null;
+}
+
+export type TransferStatus = "created" | "pending" | "confirmed" | "failed" | "expired";
+
+export interface TransferDTO {
+  id: string;
+  ref: string;
+  direction: "sent" | "received";
+  currency: PayCurrency;
+  amount: number;
+  amountAtomic: string;
+  amountUsd: number | null;
+  counterparty: string; // @username of the other side
+  toAddress: string;
+  fromAddress: string | null;
+  note: string | null;
+  memo: string | null;
+  status: TransferStatus;
+  failureReason: string | null;
+  txHash: string | null;
+  network: string;
+  createdAt: string;
+  confirmedAt: string | null;
 }

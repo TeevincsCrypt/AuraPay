@@ -9,7 +9,8 @@
  *    personal_sign and payments are performed by this test process (Ed25519 / secp256k1),
  *    so the server's cryptographic verification runs for real.
  *  - Every section screenshotted, airtime purchase with slide-to-pay, EVM wallet
- *    verification and the Aave borrow screen, plus a console-error check.
+ *    verification, scheduled bills, @username claim, Receive and Send by username,
+ *    plus a console-error check.
  *
  *   APP=http://localhost:3000 MOCK=http://localhost:4010 OUT=./screenshots node scripts/e2e-ui.mjs
  */
@@ -73,7 +74,7 @@ async function nimiqPayContext(opts, { nimKey, evmAccount, sentTxs }) {
   const nimAddress = (await (await fetch(`${APP}/api/status`)).json()) && null; // warm-up
   void nimAddress;
   await ctx.addInitScript(
-    ({ evmAddress, nimHash }) => {
+    ({ evmAddress }) => {
       window.nimiqPay = { language: "en", userFiat: "USD", network: "testnet" };
       window.nimiq = {
         listAccounts: async () => ["NQ52 BBBB BBBB BBBB BBBB BBBB BBBB BBBB BBBB"],
@@ -106,7 +107,7 @@ async function nimiqPayContext(opts, { nimKey, evmAccount, sentTxs }) {
         },
       };
     },
-    { evmAddress: evmAccount.address, nimHash: randomBytes(32).toString("hex") },
+    { evmAddress: evmAccount.address},
   );
   return ctx;
 }
@@ -117,10 +118,11 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
   const ctx = await browser.newContext(opts);
   const page = await ctx.newPage();
   track(page, `landing-${label}`);
-  await step(`${label}: landing renders with live markets`, async () => {
+  await step(`${label}: landing renders with live rates`, async () => {
     await page.goto(APP + "/", { waitUntil: "networkidle" });
     await page.getByRole("heading", { name: /Your money/ }).waitFor();
-    await page.getByText("Live US markets").waitFor();
+    await page.getByText("Live rates").waitFor();
+    await page.getByText("1 NIM").waitFor();
     await noOverflow(page);
     await page.screenshot({ path: `${OUT}/${label}-landing.png`, fullPage: true });
   });
@@ -155,6 +157,25 @@ console.log("\nInside a simulated Nimiq Pay host");
 const evmAccount = privateKeyToAccount(`0x${"33".repeat(32)}`);
 const sentTxs = [];
 const nimKey = ed25519.utils.randomPrivateKey();
+const MY_NAME = `ui_${randomBytes(3).toString("hex")}`;
+const FRIEND_NAME = `friend_${randomBytes(3).toString("hex")}`;
+
+/** Signs a second user in through the API (real Nimiq signature) and claims a username. */
+async function apiUserWithName(username) {
+  const key = ed25519.utils.randomPrivateKey();
+  let cookie = "";
+  const call = async (method, path, body) => {
+    const r = await fetch(APP + path, { method, headers: { "Content-Type": "application/json", ...(cookie ? { cookie } : {}) }, body: body ? JSON.stringify(body) : undefined });
+    const set = r.headers.get("set-cookie");
+    if (set) cookie = set.split(";")[0];
+    return r.json();
+  };
+  const ch = await call("POST", "/api/auth/challenge", { mode: "local" });
+  const v = await call("POST", "/api/auth/verify", { challengeId: ch.id, ...nimSign(key, ch.message) });
+  await call("POST", "/api/me/username", { username });
+  return { address: v.user.address };
+}
+
 for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
   const ctx = await nimiqPayContext(opts, { nimKey, evmAccount, sentTxs });
   const page = await ctx.newPage();
@@ -173,16 +194,22 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await page.screenshot({ path: `${OUT}/mobile-account.png` });
       await page.keyboard.press("Escape");
     });
-    await fetch(`${MOCK}/_test/evm-balance`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chainId: 8453, token: "0xb20000000000000000000078ee7ce2fE4908108C", owner: evmAccount.address, amount: "150000000" }) });
-    await fetch(`${MOCK}/_test/aave-position`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ supplied: "100000000", debt: "40000000", collateral: true }) });
+    await step("claim a @username from Home", async () => {
+      await page.goto(APP + "/", { waitUntil: "networkidle" });
+      await page.getByText("Claim your @username").waitFor();
+      await page.getByLabel("Username").first().fill(MY_NAME);
+      await page.getByText(`@${MY_NAME} is available`).waitFor({ timeout: 8000 });
+      await page.getByRole("button", { name: "Claim" }).first().click();
+      await page.getByText(`Hello, @${MY_NAME}`).waitFor({ timeout: 8000 });
+    });
   }
   for (const [name, path, text] of [
     ["home", "/", "Total balance"],
-    ["invest", "/invest", "Portfolio value"],
-    ["stock", "/invest/NVDA", "About NVIDIA"],
-    ["borrow", "/borrow", "You can borrow"],
+    ["send", "/send", "NIM or USDT to any AuraPay @username"],
+    ["receive", "/receive", `@${MY_NAME}`],
     ["pay", "/pay", "Where are you sending to?"],
-    ["activity", "/activity", "Every payment"],
+    ["schedules", "/schedules", "Prepaid bills"],
+    ["activity", "/activity", "Every bill"],
     ["status", "/status", "Integrations"],
   ]) {
     await step(`${label}: ${name}`, async () => {
@@ -271,22 +298,37 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await noOverflow(page);
       await page.screenshot({ path: `${OUT}/mobile-cable.png`, fullPage: true });
     });
-    await step("borrow: Aave position and borrow sheet with health projection", async () => {
-      await page.goto(APP + "/borrow", { waitUntil: "networkidle" });
-      await page.getByRole("button", { name: "Borrow", exact: true }).click();
-      await page.getByPlaceholder("0").fill("5");
-      await page.getByText("Health factor after").waitFor();
-      await page.screenshot({ path: `${OUT}/mobile-borrow-sheet.png` });
-      await page.keyboard.press("Escape");
-    });
-    await step("buy sheet: two steps (add funds → buy) with USDC balance", async () => {
-      await page.goto(APP + "/invest/NVDA", { waitUntil: "networkidle" });
-      await page.getByRole("button", { name: "Buy NVDA" }).click();
-      await page.getByText(/You'll receive/).first().waitFor();
-      await page.getByRole("radio", { name: /1 · Add funds/ }).waitFor();
-      await page.getByRole("radio", { name: /2 · Buy NVDA/ }).waitFor();
-      await page.getByText(/USDC on Base: \$/).waitFor({ timeout: 10_000 });
-      await page.screenshot({ path: `${OUT}/mobile-buy-sheet.png` });
+    await step("send NIM to another @username: review, slide, verified on-chain", async () => {
+      const friend = await apiUserWithName(FRIEND_NAME);
+      await page.goto(APP + `/send?to=${FRIEND_NAME}`, { waitUntil: "networkidle" });
+      await page.getByText(`✓ @${FRIEND_NAME}`).waitFor({ timeout: 8000 });
+      for (const k of ["2", "5"]) await page.getByRole("button", { name: `Key ${k}` }).click();
+      await page.getByLabel("Note (optional)").fill("Lunch");
+      await page.screenshot({ path: `${OUT}/send-1-form.png`, fullPage: true });
+      await page.getByRole("button", { name: "Review" }).click();
+      await page.getByText("You're sending to").waitFor();
+      await page.screenshot({ path: `${OUT}/send-2-review.png`, fullPage: true });
+      const before = sentTxs.length;
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(300);
+      const knob = page.getByRole("button", { name: /Slide to send/ });
+      const box = await knob.boundingBox();
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 330, box.y + box.height / 2, { steps: 12 });
+      await page.mouse.up();
+      await page.waitForFunction((n) => window.__sentCount?.() > n, before).catch(() => {});
+      for (let i = 0; i < 20 && sentTxs.length <= before; i++) await page.waitForTimeout(250);
+      const tx = sentTxs.slice(before).find((t) => t.kind === "nim");
+      if (!tx) throw new Error("wallet was not asked to send");
+      if (tx.recipient.replace(/\s/g, "") !== friend.address.replace(/\s/g, "")) throw new Error(`sent to ${tx.recipient}, expected ${friend.address}`);
+      await fetch(`${MOCK}/_test/nimiq-tx`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hash: tx.hash, from: "NQ52 BBBB BBBB BBBB BBBB BBBB BBBB BBBB BBBB", to: tx.recipient, value: tx.value, recipientData: Buffer.from(tx.data).toString("hex"), blockNumber: 1001, confirmations: 3, timestamp: Date.now(), executionResult: true }),
+      });
+      await page.getByText(`Sent to @${FRIEND_NAME}`).waitFor({ timeout: 20_000 });
+      await page.screenshot({ path: `${OUT}/send-3-done.png`, fullPage: true });
     });
   }
   await ctx.close();

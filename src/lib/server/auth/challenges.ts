@@ -155,7 +155,7 @@ export async function pollRemoteSignIn(challengeId: string, pollToken: string, u
 }
 
 // ---------------------------------------------------------------------------
-// EVM wallet linking (USDT on Polygon, tokenised stocks, Aave) — proven by personal_sign
+// EVM wallet linking (USDT on Polygon) — proven by personal_sign
 // ---------------------------------------------------------------------------
 
 export async function createEvmLinkChallenge(user: SessionUser, address: string, domain: string) {

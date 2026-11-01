@@ -219,8 +219,7 @@ await test("status reports live integrations only", async () => {
   eq(json.rails.NIM.available, true, "NIM rail");
   eq(json.rails.USDT.available, true, "USDT rail");
   eq("DEMO" in json.rails, false, "no simulated rail");
-  eq(json.investing.state, "live", "investing");
-  eq(json.lending.state, "live", "lending");
+  eq("investing" in json || "lending" in json, false, "invest/borrow removed");
 });
 await test("countries list only provider-supported services", async () => {
   const { json } = await c.get("/api/utilities/countries");
@@ -462,88 +461,81 @@ await test("orders are private to their account", async () => {
 });
 
 // ---------------------------------------------------------------------------
-console.log("\nInvesting — tokenised stocks");
-const NVDAC = "0xb20000000000000000000078ee7ce2fE4908108C";
-await test("quotes come from live tokenised prices when Finnhub isn't set", async () => {
-  const { json } = await c.get("/api/markets/quotes");
-  eq(json.source, "tokenized", "source");
-  const nv = json.quotes.find((q) => q.symbol === "NVDA");
-  eq(nv.token.symbol, "NVDAC", "token");
-  eq(nv.token.chainId, 8453, "Base");
-  assert(nv.price > 0 && nv.source === "tokenized", "priced");
-  const h = await c.get("/api/markets/NVDA?range=1M");
-  assert(h.json.history.points.length > 10 && h.json.history.source === "coingecko", "history");
+console.log("\nUsernames & transfers (wallet to wallet)");
+const rnd = () => randomBytes(3).toString("hex");
+const alice = c; // signed in, EVM wallet verified (PAYER_POLY)
+const bob = new Client();
+const bobAddress = await signIn(bob);
+const aliceName = `alice_${rnd()}`;
+const bobName = `bob_${rnd()}`;
+const asOrder = (t) => ({ payToAddress: t.toAddress, memo: t.memo, quote: { payAmountAtomic: t.amountAtomic } });
+await test("claiming a username: format, reserved names, uniqueness", async () => {
+  eq((await alice.post("/api/me/username", { username: "1abc" })).json.error?.code, "INVALID_USERNAME", "format");
+  eq((await alice.post("/api/me/username", { username: "admin" })).json.error?.code, "USERNAME_RESERVED", "reserved");
+  eq((await alice.post("/api/me/username", { username: `@${aliceName.toUpperCase()}` })).json.profile?.username, aliceName, "claimed (normalised)");
+  eq((await bob.get(`/api/users/check?username=${aliceName}`)).json.available, false, "now unavailable");
+  eq((await bob.post("/api/me/username", { username: aliceName })).json.error?.code, "USERNAME_TAKEN", "taken");
+  eq((await bob.post("/api/me/username", { username: bobName })).json.profile?.username, bobName, "bob claimed");
+  eq((await alice.get("/api/auth/session")).json.user.username, aliceName, "in session");
 });
-await test("portfolio reads on-chain balances of the verified wallet", async () => {
-  await mock("/_test/evm-balance", { chainId: 8453, token: NVDAC, owner: PAYER_POLY, amount: "250000000" }); // 2.5 NVDAc
-  const { json } = await c.get("/api/portfolio");
-  const h = json.portfolio.holdings.find((x) => x.symbol === "NVDA");
-  eq(h?.walletQuantity, 2.5, "quantity");
-  assert(h.valueUsd > 0, "valued");
+await test("a username resolves to the owner's receiving addresses (signed-in only)", async () => {
+  eq((await new Client().get(`/api/users/${bobName}`)).status, 401, "anonymous");
+  const r = (await alice.get(`/api/users/${bobName}`)).json.user;
+  eq(r.nimAddress.replace(/\s/g, ""), bobAddress.replace(/\s/g, ""), "NIM address");
+  eq(r.polygonAddress, null, "no USDT wallet yet");
+  eq((await alice.get(`/api/users/${aliceName}`)).json.user.polygonAddress, PAYER_POLY, "alice's verified USDT wallet");
+  eq((await alice.get("/api/users/nobody_here_123")).status, 404, "unknown");
 });
-await test("CoW order recorded, then verified against the order book", async () => {
-  const uid = `0x${randomBytes(56).toString("hex")}`;
-  const r = await c.post("/api/invest/trades", {
-    symbol: "NVDA", orderUid: uid, chainId: 137, destinationChainId: 8453, owner: PAYER_POLY,
-    inputToken: { address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", symbol: "USDT", decimals: 6 }, inputAmount: "25000000",
-    outputToken: { address: NVDAC }, outputAmount: "13000000",
-  });
-  eq(r.status, 201, "recorded");
-  await mock("/_test/cow-order", { uid, owner: PAYER_POLY, status: "fulfilled", executedSellAmount: "25000000", executedBuyAmount: "13000000" });
-  const t = await c.get("/api/invest/trades");
-  eq(t.json.trades.find((x) => x.orderUid === uid)?.status, "fulfilled", "fulfilled");
-  const p = await c.get("/api/portfolio");
-  eq(p.json.portfolio.holdings.find((x) => x.symbol === "NVDA").costBasisUsd, 25, "cost basis");
-  const act = await c.get("/api/activity?limit=50");
-  eq(act.json.items.find((i) => i.providerRef === uid)?.status, "successful", "ledger");
+let nimTransfer;
+await test("send NIM by username: verified on-chain, both sides see it", async () => {
+  eq((await new Client().post("/api/transfers", { toUsername: bobName, currency: "NIM", amount: 1 })).status, 401, "auth");
+  eq((await alice.post("/api/transfers", { toUsername: aliceName, currency: "NIM", amount: 1 })).json.error?.code, "SELF_TRANSFER", "self");
+  const r = await alice.post("/api/transfers", { toUsername: bobName, currency: "NIM", amount: 12.5, note: "Lunch" });
+  eq(r.status, 201, "intent");
+  nimTransfer = r.json.transfer;
+  eq(nimTransfer.amountAtomic, "1250000", "luna");
+  assert(nimTransfer.memo.startsWith(`AuraPay ${nimTransfer.ref}`), "memo binds tx to transfer");
+  const hash = await registerNimTx(asOrder(nimTransfer));
+  const done = (await alice.post(`/api/transfers/${nimTransfer.id}/submit`, { txHash: hash })).json.transfer;
+  eq(done.status, "confirmed", "confirmed");
+  eq(done.counterparty, bobName, "counterparty");
+  const sent = (await alice.get("/api/activity?limit=20")).json.items.find((i) => i.category === "transfer_sent");
+  eq(sent?.status, "successful", "sender ledger");
+  const got = (await bob.get("/api/activity?limit=20")).json.items.find((i) => i.category === "transfer_received");
+  eq(got?.title, `Received from @${aliceName}`, "recipient ledger");
+  eq((await bob.get("/api/transfers")).json.transfers[0]?.direction, "received", "bob's list");
+  eq((await alice.get("/api/transfers")).json.recent[0], bobName, "recent recipients");
 });
-await test("orders from unverified wallets are refused", async () => {
-  const r = await c.post("/api/invest/trades", {
-    symbol: "NVDA", orderUid: `0x${randomBytes(56).toString("hex")}`, chainId: 8453, owner: "0x3333333333333333333333333333333333333333",
-    inputToken: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", symbol: "USDC", decimals: 6 }, inputAmount: "1", outputToken: { address: NVDAC }, outputAmount: "1",
-  });
-  eq(r.status, 403, "status");
+await test("a transaction can't be claimed twice; wrong amount or memo fails", async () => {
+  const t2 = (await alice.post("/api/transfers", { toUsername: bobName, currency: "NIM", amount: 1 })).json.transfer;
+  const r = await alice.post(`/api/transfers/${t2.id}/submit`, { txHash: (await alice.get(`/api/transfers/${nimTransfer.id}`)).json.transfer.txHash });
+  eq(r.json.error?.code, "TX_ALREADY_USED", "reuse");
+  const short = await registerNimTx(asOrder(t2), { value: 99_999 });
+  eq((await alice.post(`/api/transfers/${t2.id}/submit`, { txHash: short })).json.transfer.status, "failed", "underpaid");
+  const t3 = (await alice.post("/api/transfers", { toUsername: bobName, currency: "NIM", amount: 1 })).json.transfer;
+  const wrongMemo = await registerNimTx(asOrder(t3), { recipientData: Buffer.from("AuraPay TX-OTHER").toString("hex") });
+  eq((await alice.post(`/api/transfers/${t3.id}/submit`, { txHash: wrongMemo })).json.transfer.status, "failed", "memo mismatch");
 });
-
-await test("USDC balance on Base for the buy flow", async () => {
-  await mock("/_test/evm-balance", { chainId: 8453, token: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", owner: PAYER_POLY, amount: "12500000" });
-  eq((await c.get(`/api/wallet/usdc-balance?address=${PAYER_POLY}&chainId=8453`)).json.balance, 12.5, "balance");
-  eq((await c.get(`/api/wallet/usdc-balance?address=${PAYER_POLY}&chainId=1`)).status, 422, "unsupported chain");
+await test("USDT by username needs the recipient's verified wallet; exact amount from the sender's", async () => {
+  eq((await alice.post("/api/transfers", { toUsername: bobName, currency: "USDT", amount: 5, fromAddress: PAYER_POLY })).json.error?.code, "NO_USDT_ADDRESS", "no wallet");
+  const bobEvm = privateKeyToAccount(`0x${"22".repeat(32)}`);
+  eq((await linkEvm(bob, bobEvm)).status, 200, "bob verifies a wallet");
+  const ok = await alice.post("/api/transfers", { toUsername: bobName, currency: "USDT", amount: 5, fromAddress: "0x3333333333333333333333333333333333333333" });
+  eq(ok.json.error?.code, "PAYER_NOT_VERIFIED", "unverified sender wallet");
+  const t = (await alice.post("/api/transfers", { toUsername: bobName, currency: "USDT", amount: 5, fromAddress: PAYER_POLY })).json.transfer;
+  eq(t.toAddress, bobEvm.address.toLowerCase(), "to bob's wallet");
+  eq(t.amountAtomic, "5000000", "units");
+  const hash = await registerPolyTx(asOrder(t));
+  eq((await alice.post(`/api/transfers/${t.id}/submit`, { txHash: hash })).json.transfer.status, "confirmed", "confirmed");
 });
-
-console.log("\nBorrowing — Aave V4 (MAG7 spoke, Base)");
-await test("reads live reserves and the user's position", async () => {
-  await mock("/_test/aave-position", { supplied: "100000000", debt: "50000000", collateral: true }); // 1 NVDAc, 50 USDC
-  const { json } = await c.get("/api/borrow");
-  eq(json.available, true, "available");
-  const nv = json.reserves.find((r) => r.symbol === "NVDAc");
-  const usdc = json.reserves.find((r) => r.symbol === "USDC");
-  eq(nv.ticker, "NVDA", "stock reserve identified by address");
-  eq(usdc.ticker, null, "USDC is not a stock");
-  eq(nv.collateralFactor, 0.5, "collateral factor");
-  eq(nv.priceUsd, 180, "oracle price");
-  eq(usdc.borrowApr, 0.055, "borrow APR");
-  eq(json.account.collateralUsd, 180, "collateral USD");
-  eq(json.account.debtUsd, 50, "debt USD");
-  eq(json.account.healthFactor, 1.8, "health factor");
-  eq(json.account.borrowCapacityUsd, 40, "capacity");
+await test("transfers are private to their two parties", async () => {
+  const eve = new Client();
+  await signIn(eve);
+  eq((await eve.get(`/api/transfers/${nimTransfer.id}`)).status, 404, "read");
+  eq((await bob.get(`/api/transfers/${nimTransfer.id}`)).json.transfer.direction, "received", "recipient can read");
 });
-await test("lending transaction recorded and verified via its receipt", async () => {
-  const hash = polyHash();
-  const r = await c.post("/api/borrow/actions", { action: "borrow", reserveId: 1, owner: PAYER_POLY, txHash: hash, amountAtomic: "10000000" });
-  eq(r.json.status, "submitted", "pending until mined");
-  await mock("/_test/evm-tx", { hash, from: PAYER_POLY, to: "0x17905Db0e4A3514467539956c084180616AE7B8D", status: "0x1" });
-  eq((await c.get(`/api/borrow/actions?txHash=${hash}`)).json.status, "confirmed", "confirmed");
-  const act = await c.get("/api/activity?limit=50");
-  const item = act.json.items.find((i) => i.chainTxHash === hash);
-  eq(item?.category, "loan_disbursement", "ledger category");
-  eq(item?.status, "successful", "ledger status");
-});
-await test("reverted or foreign transactions are marked failed", async () => {
-  const hash = polyHash();
-  await c.post("/api/borrow/actions", { action: "repay", reserveId: 1, owner: PAYER_POLY, txHash: hash, amountAtomic: "1000000" });
-  await mock("/_test/evm-tx", { hash, from: PAYER_POLY, to: "0x17905Db0e4A3514467539956c084180616AE7B8D", status: "0x0" });
-  eq((await c.get(`/api/borrow/actions?txHash=${hash}`)).json.status, "failed", "reverted");
+await test("invest and borrow APIs are gone", async () => {
+  for (const p of ["/api/portfolio", "/api/markets/quotes", "/api/borrow"]) eq((await c.get(p)).status, 404, p);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

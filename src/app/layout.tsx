@@ -9,7 +9,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "AuraPay — Your money. Without borders.",
-  description: "Pay for airtime, data and electricity across Africa, invest in tokenised US stocks and borrow against them — with your Nimiq Pay wallet.",
+  description: "Pay bills across Africa and send NIM or USDT by @username, with your Nimiq Pay wallet.",
   applicationName: "AuraPay",
 };
 

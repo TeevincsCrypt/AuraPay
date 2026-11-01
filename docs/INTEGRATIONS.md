@@ -8,9 +8,8 @@ AuraPay runs **real integrations only**. There are no simulators and no demo dat
 | NIM payments | `sendBasicTransactionWithData` with an order-reference memo | Nimiq JSON-RPC (`getTransactionByHash`) |
 | USDT payments | ERC-20 `transfer` on Polygon from a signature-verified EVM wallet | Polygon receipt + `Transfer` log |
 | Airtime / data / electricity | Flutterwave Bills v3 (test keys labelled TEST); Reloadly as an alternative | Flutterwave / Reloadly API |
-| Investing | Tokenised stocks bought through CoW Protocol (CoW Swap widget) by the user's wallet | CoW order book + on-chain balances |
-| Borrowing | Aave V4 MAG7 spoke on Base: supply stock tokens, borrow USDC | Aave contracts + tx receipts |
-| Prices | CoinGecko (NIM, USDT, tokenised stocks); optional Finnhub / Twelve Data for listed shares | — |
+| Transfers | Wallet to wallet by @username (NIM on Nimiq, USDT on Polygon) | Nimiq / Polygon RPC (tx verified against the transfer intent) |
+| Prices | CoinGecko (NIM, USDT) | — |
 
 ---
 
@@ -36,7 +35,7 @@ address   = userFriendly(blake2b256(publicKey)[0..20])  // "NQ" + IBAN check dig
 
 **Sessions** are rows in `sessions`; the HttpOnly cookie holds a random token and only its SHA-256 is stored. Sign-out revokes the row.
 
-**EVM wallet linking.** Nimiq Pay also injects an EVM wallet (`window.ethereum`). It is linked to the account only after `personal_sign` of a server challenge, verified with viem. USDT payments, stock orders and Aave actions are accepted only from verified addresses.
+**EVM wallet linking.** Nimiq Pay also injects an EVM wallet (`window.ethereum`). It is linked to the account only after `personal_sign` of a server challenge, verified with viem. USDT payments and transfers are accepted only from verified addresses, and USDT sent to a @username goes to one of its owner's verified addresses.
 
 ## 2. Utility payments (Flutterwave Bills, or Reloadly)
 
@@ -74,47 +73,29 @@ active ─(cancel)─▶ cancelled (refund_due_atomic) ─(admin, verified refun
 * **Each run is a normal order**, created already `paid` and fulfilled through the same claim / submit / poll / review path, so receipts, activity, provider references and refunds work unchanged. The provider reference is the run order's own ref.
 * Amounts are fixed in local currency at scheduling time; numbers, meters and smartcards are validated then.
 
-## 3. Investing — tokenised stocks via CoW Protocol
+## 3. Usernames & transfers
 
-**Assets.** `src/lib/shared/stock-tokens.ts` is generated from CoW Protocol's curated RWA registry (`cowprotocol/cowswap/apps/rwa-frontend/data/RWAs.json`, v0.1.9, 2026-10-28). AuraPay buys:
+* **@username:** 3–20 lowercase letters, digits or `_`, starting with a letter (unique; a few names reserved). It points to the owner's **Nimiq address** (the one they signed in with) and, for USDT, one of their **signature-verified Polygon addresses**. Lookups (`GET /api/users/<name>`) are for signed-in users only and rate limited.
+* **Non-custodial:** the sender's wallet pays the recipient's address directly. AuraPay charges nothing and never touches the funds.
 
-* **Coinbase tokenised stocks on Base** (AAPLc, AMZNc, GOOGLc, METAc, MSFTc, NVDAc, TSLAc, AMDc, NFLXc; 8 decimals), the same tokens Aave V4 accepts as collateral.
-* **COINx (xStocks) on Arbitrum** for Coinbase Global, which has no Coinbase-issued token.
+```
+created (intent: recipient address, exact amount, memo fixed) ─(tx hash)─▶ pending ─(verified)─▶ confirmed
+                                                                                   └─(mismatch / not found in 1 h)─▶ failed
+created ─(unused for 30 min)─▶ expired
+```
 
-Holdings are also read for the xStocks deployments on Arbitrum and Ethereum.
+* **NIM:** the transaction must pay the recipient's address at least the amount, with the memo `AuraPay <ref> [note]` (binds the tx to this transfer).
+* **USDT:** the Polygon receipt must contain a `Transfer` of exactly the amount from the sender's verified wallet to the recipient's.
+* A tx hash can be recorded once (`transfers unique (chain, tx_hash)`). On confirmation, the sender's ledger entry becomes successful and a "Received from @…" entry is added for the recipient.
+* **Receive** shows a QR code / share link `https://nimpay.app/miniapps/open/<host>/send?to=<username>&currency=…&amount=…` that opens AuraPay's Send screen in Nimiq Pay, plus the raw addresses.
 
-**Execution.** The stock page embeds the **CoW Swap widget** (`@cowprotocol/widget-lib`), the same integration CoW's own RWA app uses. It is driven by the user's Nimiq Pay EVM provider and handles quotes, token approval, EIP-712 order signing, settlement and the issuers' eligibility/geoblocking rules. By default it sells **USDT on Polygon** (where Nimiq Pay keeps USDT) with `targetChainId` set to the token's chain (CoW cross-chain swap); USDC on the destination chain is also offered. An optional CoW partner fee can be configured.
+## 4. Data model
 
-**Verification.** The widget's `ON_POSTED_ORDER` event is sent to `POST /api/invest/trades`. The owner must be a verified wallet, and the output token must match the stock. The order's status and fills are then read from CoW's public order book (`api.cow.fi/<network>/api/v1/orders/<uid>`), and the activity ledger is updated from there.
-
-**Portfolio.** `GET /api/portfolio` reads ERC-20 balances of every registry token for the user's verified wallets on Base, Arbitrum and Ethereum, plus tokens supplied to Aave. Holdings are valued at each token's live CoinGecko price. Cost basis comes only from fulfilled, stablecoin-funded orders AuraPay recorded.
-
-**Caveats shown to users.** Tokenised stocks are issued by third parties, may not confer shareholder rights, and are not available in every jurisdiction. Network fees apply.
-
-## 4. Borrowing — Aave V4 (MAG7 spoke on Base)
-
-Addresses come from Aave's official address book (`bgd-labs/aave-address-book`, `AaveV4Base.sol`):
-
-| Contract | Address |
-|---|---|
-| MAG7 Spoke | `0x17905Db0e4A3514467539956c084180616AE7B8D` |
-| MAG7 Spoke oracle | `0xaBaf048fD7675Ea34a84332371ffd5D55E322A47` |
-| Equities Hub | `0xa4d5947Eb727A052bae69C593FfC84247EC9864E` |
-
-ABI fragments are transcribed from `aave/aave-v4` (`ISpoke.sol`, `IAaveOracle.sol`, `IHub.sol`). Units (`SpokeUtils`): Value = 1e26 per USD; debt value additionally RAY-scaled; health factor WAD; collateral factor in BPS; oracle prices have 8 decimals; drawn rate is RAY per year.
-
-* **Reads** (`src/lib/server/lending.ts`): reserves (`getReserveCount`, `getReserve`, `getReserveConfig`, `getDynamicReserveConfig`), prices (`getReservesPrices`), borrow rate (`Hub.getAssetDrawnRate`), and the user's `getUserAccountData`, supplied assets, debt and collateral status. Stock reserves are identified by matching the underlying address against the registry, never by symbol.
-* **Writes** are sent by the user's wallet on Base: `approve` → `supply` → `setUsingAsCollateral`; `borrow` USDC; `approve` → `repay`; `withdraw`. The UI projects the health factor and blocks actions that would drop it below 1.25.
-* **Verification.** Each tx hash is posted to `/api/borrow/actions`. Its receipt must succeed and come from the verified wallet to the expected contract before the activity ledger shows it as completed.
-* Users need ETH on Base for gas. The borrow rate is variable, plus a risk premium Aave may charge.
-
-## 5. Data model
-
-Migrations: `supabase/migrations/20261031000000_init.sql`, `20261101000000_auth_and_real.sql`.
+Migrations: `supabase/migrations/` (applied in order on first use). `stock_trades` and `lending_actions` remain from the removed Invest/Borrow features but are unused.
 
 The second migration adds `sessions`, `auth_challenges`, `stock_trades` and `lending_actions`, makes users identified by `nimiq_address`, and requires verified EVM wallets. It also **deletes all records created by the former simulators** and narrows constraints, so `DEMO` payments can no longer exist. RLS is enabled with no policies everywhere, and `anon`/`authenticated` privileges are revoked: only the server connection can access data.
 
-## 6. Security checklist
+## 5. Security checklist
 
 * No keys or seed phrases are ever requested or stored. Every payment and transaction is approved in Nimiq Pay.
 * Secrets are server-only; the logger redacts secret-like keys.

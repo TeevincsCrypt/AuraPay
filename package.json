@@ -13,8 +13,6 @@
     "test:ui": "node scripts/e2e-ui.mjs"
   },
   "dependencies": {
-    "@cowprotocol/events": "^4.17.1",
-    "@cowprotocol/widget-lib": "^4.12.0",
     "@electric-sql/pglite": "^0.5.14",
     "@nimiq/mini-app-sdk": "^0.2.4",
     "@noble/curves": "^1.9.1",

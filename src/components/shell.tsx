@@ -3,18 +3,19 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useId, useState, type ReactNode } from "react";
-import { Home, LineChart, Landmark, Zap, ListOrdered, Activity, LogOut, ExternalLink, CheckCircle2, Wallet } from "lucide-react";
+import { Home, Send, Zap, CalendarClock, ListOrdered, Activity, LogOut, ExternalLink, CheckCircle2, Wallet } from "lucide-react";
 import { useSession } from "@/lib/client/session";
 import { useWallet, WalletActionError } from "@/lib/client/wallet";
 import { fmtCrypto, shortAddress } from "@/lib/shared/format";
 import { SignInPanel } from "./auth/sign-in";
+import { UsernameEditor } from "./transfers/username-editor";
 import { Avatar, Badge, Button, Card, cx, KV, Notice, Sheet, Spinner } from "./ui";
 
 const NAV = [
   { href: "/", label: "Home", icon: Home },
-  { href: "/invest", label: "Invest", icon: LineChart },
-  { href: "/borrow", label: "Borrow", icon: Landmark },
+  { href: "/send", label: "Send", icon: Send },
   { href: "/pay", label: "Pay", icon: Zap },
+  { href: "/schedules", label: "Scheduled", icon: CalendarClock },
   { href: "/activity", label: "Activity", icon: ListOrdered },
 ] as const;
 
@@ -62,9 +63,13 @@ export function AccountSheet({ open, onClose }: { open: boolean; onClose: () => 
           <div className="flex items-center gap-3">
             <Avatar seed={user.address} size={52} />
             <div className="min-w-0">
-              <p className="text-[15px] font-semibold text-fg">Nimiq account</p>
+              <p className="text-[15px] font-semibold text-fg">{user.username ? `@${user.username}` : "Nimiq account"}</p>
               <p className="truncate font-mono text-xs text-fg-3">{user.address}</p>
             </div>
+          </div>
+          <div className="rounded-[20px] bg-surface-2 p-4">
+            <p className="mb-2 text-sm font-semibold text-fg">Username</p>
+            <UsernameEditor compact />
           </div>
           <div className="rounded-[20px] bg-surface-2 px-4 py-1">
             <KV k="NIM balance" v={w.nimiq.balanceLuna !== null ? fmtCrypto(w.nimiq.balanceLuna / 1e5, "NIM") : w.host === "nimiq-pay" ? "—" : "Open in Nimiq Pay"} />
@@ -76,7 +81,7 @@ export function AccountSheet({ open, onClose }: { open: boolean; onClose: () => 
               <p className="text-sm font-semibold text-fg">EVM wallet</p>
               {user.evmAddresses.length ? <Badge tone="up"><CheckCircle2 className="size-3" /> Verified</Badge> : <Badge>Not linked</Badge>}
             </div>
-            <p className="mt-1 text-xs text-fg-3">Used for USDT payments, tokenised stocks and borrowing. Linking proves ownership with a signature.</p>
+            <p className="mt-1 text-xs text-fg-3">Used to pay with USDT and to receive USDT sent to your @username. Linking proves ownership with a signature.</p>
             {user.evmAddresses.map((a) => (
               <p key={a} className="mt-2 font-mono text-xs text-fg-2">{shortAddress(a, 10, 8)}</p>
             ))}
@@ -146,8 +151,8 @@ export function Greeting() {
         <button onClick={() => setOpen(true)} className="flex min-w-0 items-center gap-3 text-left">
           <Avatar seed={user.address} size={44} />
           <span className="min-w-0">
-            <span className="block text-[17px] font-semibold text-fg">Hello 👋</span>
-            <span className="block truncate font-mono text-xs text-fg-3">{shortAddress(user.address, 9, 4)}</span>
+            <span className="block text-[17px] font-semibold text-fg">Hello{user.username ? `, @${user.username}` : ""} 👋</span>
+            <span className="block truncate font-mono text-xs text-fg-3">{user.username ? "Tap to manage your account" : shortAddress(user.address, 9, 4)}</span>
           </span>
         </button>
         <Link href="/status" aria-label="Status" className="grid size-11 place-items-center rounded-full bg-surface text-fg shadow-[var(--shadow-card)]">
@@ -217,7 +222,7 @@ function Sidebar({ path }: { path: string }) {
         <button onClick={() => setOpen(true)} className="mt-auto flex items-center gap-3 rounded-[20px] bg-white p-3 text-left shadow-[var(--shadow-card)]">
           <Avatar seed={session.user.address} size={40} />
           <span className="min-w-0">
-            <span className="block text-sm font-semibold text-fg">My account</span>
+            <span className="block text-sm font-semibold text-fg">{session.user.username ? `@${session.user.username}` : "My account"}</span>
             <span className="block truncate font-mono text-[11px] text-fg-3">{shortAddress(session.user.address, 9, 4)}</span>
           </span>
         </button>

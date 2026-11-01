@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 const Body = z.object({ address: z.string().regex(/^0x[0-9a-fA-F]{40}$/) });
 
-/** Message for personal_sign that proves control of an EVM address (USDT, stocks, Aave). */
+/** Message for personal_sign that proves control of an EVM address (USDT on Polygon). */
 export const POST = handler(async (req) => {
   enforceRateLimit(req, "auth:evm", 20, 60);
   const user = await requireUser();

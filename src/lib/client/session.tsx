@@ -14,6 +14,8 @@ import { useWallet } from "./wallet";
 export interface SessionInfo {
   address: string;
   evmAddresses: string[];
+  username: string | null;
+  receiveEvmAddress: string | null;
 }
 
 export interface RemoteRequest {

@@ -2,9 +2,7 @@ import "server-only";
 import type { IntegrationStatus } from "@/lib/shared/types";
 import { config } from "./config";
 import { getDbState } from "./db";
-import { investingStatus } from "./investing";
 import { errorMessage } from "./log";
-import { marketDataSource } from "./market";
 import { paymentRails } from "./rails";
 import { getRatesSafe } from "./rates";
 import { utilityEnvironment } from "./utilities/provider";
@@ -18,7 +16,6 @@ export async function integrationStatus(): Promise<IntegrationStatus> {
     database = { kind: config.databaseUrl ? "postgres" : "none", persistent: false, ok: false, error: errorMessage(err) };
   }
   const { rates, error: ratesError } = await getRatesSafe();
-  const src = marketDataSource();
 
   return {
     database,
@@ -31,13 +28,6 @@ export async function integrationStatus(): Promise<IntegrationStatus> {
     rates: rates
       ? { state: "live", source: rates.source, nimUsd: rates.nimUsd, usdtUsd: rates.usdtUsd }
       : { state: "unavailable", source: "coingecko", reason: ratesError },
-    marketData: {
-      state: rates || config.market.finnhubKey ? "live" : "unavailable",
-      provider: src === "finnhub" ? "Finnhub (listed price)" : "CoinGecko (tokenised-stock price)",
-      reason: src === "finnhub" ? undefined : "FINNHUB_API_KEY not set — prices shown are the live tokenised-stock market prices.",
-    },
-    investing: investingStatus(),
-    lending: { state: "live", provider: "Aave V4 (MAG7 spoke, Base)", reason: "Borrow USDC against Coinbase tokenised stocks, directly from your wallet." },
     merchant: { nimAddress: config.nimiq.merchantAddress, polygonAddress: config.polygon.merchantAddress },
   };
 }

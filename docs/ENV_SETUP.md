@@ -135,7 +135,7 @@ ADMIN_API_TOKEN=<the random value>
 
 ### `COINGECKO_API_KEY`
 
-NIM/USDT exchange rates and tokenised-stock prices come from CoinGecko. The keyless API is heavily rate-limited, and Vercel's IPs are shared, so add a free **Demo** key:
+NIM/USDT exchange rates come from CoinGecko. The keyless API is heavily rate-limited, and Vercel's IPs are shared, so add a free **Demo** key:
 
 1. Sign up at <https://www.coingecko.com/en/api/pricing> and choose the free **Demo** plan.
 2. In the developer dashboard, create an API key.
@@ -149,15 +149,10 @@ COINGECKO_PRO=false
 
 ## 4. Optional
 
-| Variable | What it adds | Where to get it |
+| Variable | What it does | Where to get it |
 |---|---|---|
-| `FINNHUB_API_KEY` | Listed share prices, company logos, US market open/closed | <https://finnhub.io/register> (free) |
-| `TWELVEDATA_API_KEY` | Listed share price history for charts | <https://twelvedata.com/register> (free) |
-| `BASE_RPC_URL`, `POLYGON_RPC_URL`, `ARBITRUM_RPC_URL`, `ETHEREUM_RPC_URL` | Your own RPC endpoints instead of the rate-limited public ones | Alchemy, Infura, QuickNode, etc. (free tiers) |
-| `COW_PARTNER_FEE_BPS` + `COW_PARTNER_FEE_RECIPIENT` | Earn a fee on stock purchases (e.g. `25` = 0.25%) paid to your `0x…` address | CoW Protocol partner fee; no sign-up needed |
-| `AURAPAY_SERVICE_FEE_BPS` | AuraPay's fee on utility payments (default `150` = 1.5%) | — |
-
-Without Finnhub/Twelve Data, prices and charts use the live market price of the tokenised stocks (CoinGecko), labelled as such.
+| `POLYGON_RPC_URL` | Your own Polygon RPC instead of the rate-limited public one (verifies USDT payments and transfers) | Alchemy, Infura, QuickNode, etc. (free tiers) |
+| `AURAPAY_SERVICE_FEE_BPS`, `AURAPAY_MIN_SERVICE_FEE_USD` | Bill payment fee (default 1.5%, min $0.10). Transfers are free. | — |
 
 ---
 

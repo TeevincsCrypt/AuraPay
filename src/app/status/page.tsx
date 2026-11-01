@@ -85,9 +85,6 @@ export default function StatusPage() {
                 tone={s.rates.state === "live" ? "up" : "down"}
                 detail={s.rates.state === "live" ? `CoinGecko · 1 NIM = $${fmtRate(s.rates.nimUsd ?? 0)} · 1 USDT = ${fmtUsd(s.rates.usdtUsd)}` : s.rates.reason}
               />
-              <Row name="Market data" state={s.marketData.state === "live" ? "Live" : "Unavailable"} tone={s.marketData.state === "live" ? "up" : "down"} detail={s.marketData.reason ?? s.marketData.provider} />
-              <Row name="Investing" state={s.investing.state === "live" ? "Live" : "Unavailable"} tone={s.investing.state === "live" ? "up" : "down"} detail={`${s.investing.provider}. ${s.investing.reason}`} />
-              <Row name="Borrowing" state={s.lending.state === "live" ? "Live" : "Unavailable"} tone={s.lending.state === "live" ? "up" : "down"} detail={`${s.lending.provider}. ${s.lending.reason}`} />
             </div>
           </Card>
 

@@ -121,14 +121,6 @@ export const config = {
     minConfirmations: int("POLYGON_MIN_CONFIRMATIONS", 10),
   },
 
-  /** RPC endpoints for chains where tokenised stocks and Aave V4 live. */
-  rpc: {
-    1: env("ETHEREUM_RPC_URL") ?? "https://ethereum-rpc.publicnode.com",
-    137: env("POLYGON_RPC_URL") ?? "https://polygon-bor-rpc.publicnode.com",
-    8453: env("BASE_RPC_URL") ?? "https://base-rpc.publicnode.com",
-    42161: env("ARBITRUM_RPC_URL") ?? "https://arbitrum-one-rpc.publicnode.com",
-  } as Record<number, string>,
-
   /** Allow real-value payments to fund SANDBOX (test) top-ups. Off by default. */
   allowRealPaymentsForSandbox: bool("ALLOW_REAL_PAYMENTS_FOR_SANDBOX"),
 
@@ -144,17 +136,6 @@ export const config = {
     coingeckoPro: bool("COINGECKO_PRO"),
   },
 
-  market: {
-    finnhubKey: env("FINNHUB_API_KEY"),
-    twelveDataKey: env("TWELVEDATA_API_KEY"),
-  },
-
-  cow: {
-    /** Optional partner fee on stock purchases (CoW Protocol partner fee), in BPS. */
-    partnerFeeBps: int("COW_PARTNER_FEE_BPS", 0),
-    partnerFeeRecipient: env("COW_PARTNER_FEE_RECIPIENT"),
-    appCode: env("COW_APP_CODE") ?? "AuraPay",
-  },
 } as const;
 
 /** A test-only override URL, honoured only when AURAPAY_TEST_MODE is on. */

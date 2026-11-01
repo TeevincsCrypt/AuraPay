@@ -13,11 +13,12 @@ import type { ActivityItem, UtilityOrderDTO } from "@/lib/shared/types";
 
 const DETAIL_LABELS: Record<string, string> = {
   token: "Token",
-  chainId: "Network ID",
-  targetChainId: "Delivered on network ID",
-  action: "Action",
-  reserveId: "Aave reserve",
   originalRef: "Original order",
+  to: "To",
+  from: "From",
+  note: "Note",
+  scheduleRef: "Schedule",
+  run: "Payment number",
 };
 
 export default function ActivityDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -55,12 +56,12 @@ export default function ActivityDetailPage({ params }: { params: Promise<{ id: s
                   <StatusPill status={item.status} />
                   {item.environment === "sandbox" ? <TestBadge /> : null}
                 </div>
-                {typeof item.details.note === "string" ? <Notice tone="warn">{item.details.note}</Notice> : null}
+                {typeof item.details.note === "string" && !item.category.startsWith("transfer_") ? <Notice tone="warn">{item.details.note}</Notice> : null}
                 <div>
                   {Object.entries(item.details)
                     .filter(([k, v]) => k in DETAIL_LABELS && v !== null && v !== undefined && typeof v !== "object")
                     .map(([k, v]) => (
-                      <KV key={k} k={DETAIL_LABELS[k]} v={typeof v === "number" ? String(+v.toFixed(6)) : String(v)} />
+                      <KV key={k} k={DETAIL_LABELS[k]} v={(k === "to" || k === "from") && typeof v === "string" ? `@${v}` : typeof v === "number" ? String(+v.toFixed(6)) : String(v)} />
                     ))}
                 </div>
                 <Divider />

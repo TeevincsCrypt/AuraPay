@@ -9,7 +9,7 @@ import type { ActivityItem } from "@/lib/shared/types";
 
 type Cat = "all" | ActivityItem["category"];
 
-const CATS: Cat[] = ["all", "utility_purchase", "stock_purchase", "loan_disbursement", "loan_repayment", "refund"];
+const CATS: Cat[] = ["all", "utility_purchase", "transfer_sent", "transfer_received", "bill_schedule", "refund"];
 
 function dayLabel(iso: string) {
   const d = new Date(iso);
@@ -36,7 +36,7 @@ export default function ActivityPage() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Activity" subtitle="Every payment, investment and loan in one place." />
+      <PageHeader title="Activity" subtitle="Every bill, transfer and refund in one place." />
       <div className="scrollbar-none -mx-4 flex gap-2 overflow-x-auto px-4 sm:mx-0 sm:px-0">
         {CATS.map((c) => (
           <button
