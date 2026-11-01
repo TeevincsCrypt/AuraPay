@@ -21,7 +21,6 @@ export async function integrationStatus(): Promise<IntegrationStatus> {
 
   return {
     database,
-    auth: { sessionSecretConfigured: config.sessionSecretConfigured },
     reloadly: config.reloadly.configured
       ? { state: config.reloadly.mode }
       : { state: "disconnected", reason: "RELOADLY_CLIENT_ID / RELOADLY_CLIENT_SECRET not set." },

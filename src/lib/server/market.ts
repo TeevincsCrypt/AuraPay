@@ -1,9 +1,9 @@
 import "server-only";
 import type { MarketStatus, PricePoint, StockQuote } from "@/lib/shared/types";
 import { STOCK_TOKENS } from "@/lib/shared/stock-tokens";
+import { STOCK_REFS, type StockRef } from "@/lib/shared/stocks";
 import { coingecko, tokenPrices } from "./coingecko";
 import { config } from "./config";
-import { getDb } from "./db";
 import { errorMessage, log } from "./log";
 
 /**
@@ -15,13 +15,7 @@ import { errorMessage, log } from "./log";
  * If a source fails, the value is reported unavailable — never invented.
  */
 
-export interface StockRef {
-  symbol: string;
-  name: string;
-  exchange: string;
-  sector: string;
-  description: string;
-}
+export type { StockRef } from "@/lib/shared/stocks";
 
 export type HistoryRange = "1W" | "1M" | "3M" | "1Y";
 
@@ -40,13 +34,9 @@ export function marketDataSource(): "finnhub" | "tokenized" {
   return config.market.finnhubKey ? "finnhub" : "tokenized";
 }
 
+/** Supported stocks come from code, so market data works even before the database is reachable. */
 export async function stockRefs(): Promise<StockRef[]> {
-  return cached("refs", 10 * 60_000, async () => {
-    const db = await getDb();
-    return db.query<StockRef & Record<string, unknown>>(
-      "select symbol, name, exchange, sector, description from stocks where is_active order by sort_order",
-    );
-  });
+  return STOCK_REFS;
 }
 
 // ---------------------------------------------------------------------------

@@ -36,7 +36,7 @@ scripts/                mock providers, API tests, Playwright UI tests
 
 ```bash
 npm install
-cp .env.example .env.local     # set at least SESSION_SECRET; add provider credentials as you have them
+cp .env.example .env.local     # add provider credentials as you have them
 npm run dev -- -H 0.0.0.0      # http://localhost:3000
 ```
 
@@ -44,7 +44,7 @@ Without `DATABASE_URL`, development uses embedded PGlite (`.data/pglite`). Open 
 
 | Feature | Needs |
 |---|---|
-| Sign-in | `SESSION_SECRET` (and `APP_URL` in production) |
+| Sign-in | a database (`DATABASE_URL` in production) and `APP_URL` |
 | Utilities | `RELOADLY_CLIENT_ID`, `RELOADLY_CLIENT_SECRET` (`RELOADLY_MODE=sandbox` for testing) |
 | Pay with NIM | `NIMIQ_MERCHANT_ADDRESS`, `NIMIQ_NETWORK`, `NIMIQ_RPC_URL` |
 | Pay with USDT | `POLYGON_MERCHANT_ADDRESS` |
@@ -56,7 +56,7 @@ To test payments without real money, use Reloadly **sandbox** with Nimiq **testn
 ## Deploy (Vercel + Supabase)
 
 1. Create a Supabase project. Apply migrations with `supabase db push` (or set `DB_AUTO_MIGRATE=true`).
-2. Import the repo in Vercel and set the variables from `.env.example`: at minimum `APP_URL`, `SESSION_SECRET`, `DATABASE_URL` (transaction pooler, port 6543), the Reloadly credentials, and the NIM/USDT merchant settings.
+2. Import the repo in Vercel and set the variables — step-by-step guide in [`docs/ENV_SETUP.md`](docs/ENV_SETUP.md). At minimum `APP_URL`, `DATABASE_URL` (transaction pooler, port 6543) with `DB_AUTO_MIGRATE=true`, the Reloadly credentials, and the NIM/USDT merchant settings.
 3. Deploy, check `/status`, then open `https://nimpay.app/miniapps/open/<your-domain>` on a phone.
 
 For production, use your own Nimiq node or RPC provider (`NIMIQ_RPC_URL`) and dedicated EVM RPCs (`BASE_RPC_URL`, `ARBITRUM_RPC_URL`, `ETHEREUM_RPC_URL`, `POLYGON_RPC_URL`). The open defaults are rate-limited.

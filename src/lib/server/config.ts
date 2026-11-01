@@ -43,8 +43,6 @@ export const config = {
   isProdRuntime,
   testMode,
 
-  sessionSecretConfigured: (env("SESSION_SECRET")?.length ?? 0) >= 32,
-
   /** Public origin used in sign-in messages and Nimiq Pay deep links, e.g. https://aurapay.app */
   appUrl: env("APP_URL"),
 
@@ -119,14 +117,4 @@ export const config = {
 /** A test-only override URL, honoured only when AURAPAY_TEST_MODE is on. */
 export function testOverride(name: string): string | undefined {
   return testMode ? env(name) : undefined;
-}
-
-/** HMAC/session secret. Required in production runtime. */
-export function sessionSecret(): string {
-  const s = env("SESSION_SECRET");
-  if (s && s.length >= 32) return s;
-  if (isProdRuntime && !testMode) throw new Error("SESSION_SECRET (>= 32 chars) is required in production.");
-  const g = globalThis as unknown as { __apDevSecret?: string };
-  g.__apDevSecret ??= crypto.randomUUID() + crypto.randomUUID();
-  return g.__apDevSecret;
 }

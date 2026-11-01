@@ -3,6 +3,7 @@ import { readdir, readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config";
 import { log } from "../log";
+import { ConfigError } from "../http";
 
 /**
  * Minimal database abstraction shared by two drivers:
@@ -113,7 +114,7 @@ async function init(): Promise<DbState> {
     if (process.env.DB_AUTO_MIGRATE === "true") await migrate(state);
   } else {
     if (!config.allowEmbeddedDb) {
-      throw new Error("DATABASE_URL is required in production.");
+      throw new ConfigError("the database (DATABASE_URL) is not configured.");
     }
     state = await createPglite(config.pgliteDir);
     await migrate(state);

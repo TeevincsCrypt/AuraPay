@@ -24,7 +24,6 @@ export interface RailStatus {
 
 export interface IntegrationStatus {
   database: { kind: string; persistent: boolean; ok: boolean; error?: string };
-  auth: { sessionSecretConfigured: boolean };
   reloadly: { state: "sandbox" | "production" | "disconnected"; reason?: string };
   nimiq: { network: "mainnet" | "testnet"; merchantConfigured: boolean; rpcConfigured: boolean };
   polygon: { merchantConfigured: boolean; rpcUrlHost: string };

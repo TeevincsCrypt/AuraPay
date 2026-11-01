@@ -4,6 +4,9 @@ import type { ZodType } from "zod";
 import { errorMessage, log } from "./log";
 import { rateLimit } from "./ratelimit";
 
+/** Thrown when the deployment is missing required configuration (e.g. DATABASE_URL). */
+export class ConfigError extends Error {}
+
 /** Error with a stable machine code and a user-safe message. */
 export class AppError extends Error {
   constructor(
@@ -79,6 +82,13 @@ export function handler<Ctx>(fn: (req: Request, ctx: Ctx) => Promise<Response>) 
         return NextResponse.json(
           { error: { code: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) } },
           { status: err.status, headers },
+        );
+      }
+      if (err instanceof ConfigError) {
+        log.error("api.not_configured", { path: new URL(req.url).pathname, error: err.message });
+        return NextResponse.json(
+          { error: { code: "SERVER_NOT_CONFIGURED", message: `AuraPay isn't fully set up yet: ${err.message} Check /status.` } },
+          { status: 503 },
         );
       }
       log.error("api.unhandled", { path: new URL(req.url).pathname, error: errorMessage(err) });
