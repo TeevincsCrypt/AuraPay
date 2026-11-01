@@ -208,7 +208,8 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
     ["send", "/send", "NIM or USDT to any AuraPay @username"],
     ["receive", "/receive", `@${MY_NAME}`],
     ["pay", "/pay", "Where are you sending to?"],
-    ["schedules", "/schedules", "Prepaid bills"],
+    ["schedules", "/schedules", "Reminders for recurring payments"],
+    ["savings", "/savings", "Save together in a circle"],
     ["activity", "/activity", "Every bill"],
     ["status", "/status", "Integrations"],
   ]) {
@@ -248,6 +249,39 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await page.getByText("New payment").waitFor({ timeout: 20_000 });
       await page.screenshot({ path: `${OUT}/flow-3-receipt.png`, fullPage: true });
     });
+    await step("repeat a bill as a monthly reminder; it shows on Scheduled", async () => {
+      await page.getByRole("button", { name: /Repeat this payment/ }).click();
+      await page.getByRole("button", { name: /Set reminder/ }).click();
+      await page.getByText("Reminder set").waitFor({ timeout: 8000 });
+      await page.screenshot({ path: `${OUT}/reminder-set.png` });
+      await page.goto(APP + "/schedules", { waitUntil: "networkidle" });
+      await page.getByText(/every month · next/).first().waitFor();
+      await page.screenshot({ path: `${OUT}/mobile-reminders.png`, fullPage: true });
+    });
+    await step("show amounts in naira", async () => {
+      await page.goto(APP + "/", { waitUntil: "networkidle" });
+      await page.getByRole("button", { name: /Display currency: USD/ }).click();
+      await page.getByRole("button", { name: /NGN/ }).click();
+      await page.getByRole("button", { name: /Display currency: NGN/ }).waitFor({ timeout: 8000 });
+      await page.locator("p.num", { hasText: "₦" }).first().waitFor({ timeout: 8000 });
+      await page.screenshot({ path: `${OUT}/mobile-home-ngn.png`, fullPage: true });
+    });
+    await step("start a savings circle with a friend", async () => {
+      const friend2 = `pal_${randomBytes(3).toString("hex")}`;
+      await apiUserWithName(friend2);
+      await page.goto(APP + "/savings/new", { waitUntil: "networkidle" });
+      await page.getByLabel("Name").fill("Family ajo");
+      await page.getByLabel("Contribution per member, per period").fill("10");
+      await page.getByLabel("Add member").fill(friend2);
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      await page.getByText(`@${friend2}`).waitFor();
+      await page.screenshot({ path: `${OUT}/savings-new.png`, fullPage: true });
+      await page.getByRole("button", { name: "Create & invite" }).click();
+      await page.getByText("Members & payout order").waitFor({ timeout: 10_000 });
+      await page.getByText("Invited").waitFor();
+      await noOverflow(page);
+      await page.screenshot({ path: `${OUT}/savings-circle.png`, fullPage: true });
+    });
     await step("schedule a monthly airtime bill: prepay, verified, listed", async () => {
       await page.goto(APP + "/pay?service=airtime", { waitUntil: "networkidle" });
       await page.getByRole("button", { name: /Nigeria/ }).click();
@@ -285,6 +319,7 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await page.getByText("Bill scheduled").waitFor({ timeout: 20_000 });
       await page.screenshot({ path: `${OUT}/schedule-3-done.png`, fullPage: true });
       await page.goto(APP + "/schedules", { waitUntil: "networkidle" });
+      await page.getByRole("radio", { name: "Autopay" }).click();
       await page.getByText("Next payment").first().waitFor();
       await noOverflow(page);
       await page.screenshot({ path: `${OUT}/mobile-schedules.png`, fullPage: true });

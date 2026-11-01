@@ -157,6 +157,7 @@ export function reloadlyProvider(): UtilityProvider {
     countryServices: (cc) => wrap(() => countryServices(cc)),
     operators: (cc, service) => wrap(async () => (await operatorsForCountry(cc)).filter(service === "data" ? isDataOperator : isAirtimeOperator)),
     detectOperator: (e164, cc) => detectOperator(e164, cc),
+    fxPerUsd: async () => null,
     billers: (cc, service) => (service === "electricity" ? wrap(() => electricityBillers(cc)) : Promise.resolve([])),
     price: (input) => {
       if (input.service === "cable" || input.service === "internet") {

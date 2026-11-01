@@ -553,6 +553,7 @@ export function flutterwaveProvider(): UtilityProvider {
       const match = airtime.find((o) => networkFromName(o.name) === net);
       return match ?? { ...emptyOperator(cc), code: "", name: net };
     },
+    fxPerUsd: (currency) => fxPerUsd(currency),
     billers: (cc, service) => (service === "electricity" ? powerBillers(cc) : packageBillers(cc, service)).catch(toProviderError),
     price: (input) => price(input).catch(toProviderError),
 

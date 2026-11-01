@@ -81,6 +81,8 @@ export interface UtilityProvider {
   operators(countryCode: string, service: "airtime" | "data"): Promise<OperatorDTO[]>;
   detectOperator(e164: string, countryCode: string): Promise<OperatorDTO | null>;
   billers(countryCode: string, service: BillerService): Promise<BillerDTO[]>;
+  /** Local currency units per 1 USD at the provider's rate (what bills are priced at), or null. */
+  fxPerUsd(currency: string): Promise<number | null>;
   price(input: PriceInput): Promise<Priced>;
   submit(order: ProviderOrder): Promise<ProviderOutcome>;
   poll(order: ProviderOrder): Promise<ProviderOutcome>;

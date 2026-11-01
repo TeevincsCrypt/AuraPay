@@ -89,6 +89,18 @@ created ─(unused for 30 min)─▶ expired
 * A tx hash can be recorded once (`transfers unique (chain, tx_hash)`). On confirmation, the sender's ledger entry becomes successful and a "Received from @…" entry is added for the recipient.
 * **Receive** shows a QR code / share link `https://nimpay.app/miniapps/open/<host>/send?to=<username>&currency=…&amount=…` that opens AuraPay's Send screen in Nimiq Pay, plus the raw addresses.
 
+## 3b. Display currency
+
+`users.display_currency` (USD, NGN, GHS, KES, UGX, ZAR, TZS). `GET /api/rates?fiat=NGN` adds USD→local from the bill provider's own rate (Flutterwave `/v3/transfers/rates`, i.e. what bills are priced at), falling back to CoinGecko's USDT price in that currency. No invented rates: if neither answers, local amounts are hidden. Payments are always made in NIM/USDT.
+
+## 3c. Recurring payments & bill reminders
+
+A self-custodial wallet can't be charged automatically, so `recurring_items` are created from a real completed bill order or transfer (`POST /api/recurring {orderId|transferId, frequency, firstDueAt}`) and become **due** on schedule (Home "Due soon", Scheduled → Reminders). "Pay now" opens the prefilled flow (`/pay?recurring=<id>`, `/send?…&recurring=<id>`). An item advances only when a matching **verified** payment exists after its creation (same service + recipient, or a confirmed transfer to the same @username), whether paid from the reminder or normally. `GET /api/recurring/<id>/ics` returns an iCalendar event with the repeat rule and an alert. Bills that should pay themselves use prepaid Autopay (§2b).
+
+## 3d. Savings circles (rotating savings)
+
+`savings_circles` + `circle_members` (payout `position`). The organizer invites @usernames; members accept/decline (USDT circles require a verified wallet); the organizer starts it once everyone has replied. Round *k* goes to member *k* and is due at start + (k−1) periods. A contribution is an ordinary transfer intent with `circleId` + `round`: it must come from a member other than the round's recipient, go to that recipient, and be exactly the contribution amount and currency, once per member per round (`ALREADY_CONTRIBUTED`). Progress is derived from confirmed transfers; the circle completes when every round is fully paid. Members pay each other directly, so AuraPay never holds the pot (it can't force a member to pay; members should trust each other).
+
 ## 4. Data model
 
 Migrations: `supabase/migrations/` (applied in order on first use). `stock_trades` and `lending_actions` remain from the removed Invest/Borrow features but are unused.

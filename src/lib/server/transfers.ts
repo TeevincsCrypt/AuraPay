@@ -1,6 +1,7 @@
 import "server-only";
 import type { PayCurrency, TransferDTO, TransferStatus, UsernameProfile } from "@/lib/shared/types";
 import { verifiedEvmAddresses } from "./auth/challenges";
+import { checkContribution } from "./circles";
 import { config } from "./config";
 import { getDb, iso, num, numOrNull, type Db } from "./db";
 import { AppError } from "./http";
@@ -44,6 +45,7 @@ export function normaliseUsername(raw: string): string {
 export interface MyProfile {
   username: string | null;
   receiveEvmAddress: string | null;
+  displayCurrency: string;
 }
 
 async function defaultReceiveEvm(db: Db, userId: string, chosen: string | null): Promise<string | null> {
@@ -54,8 +56,15 @@ async function defaultReceiveEvm(db: Db, userId: string, chosen: string | null):
 
 export async function getMyProfile(userId: string): Promise<MyProfile> {
   const db = await getDb();
-  const r = (await db.query<{ username: string | null; receive_evm_address: string | null }>("select username, receive_evm_address from users where id = $1", [userId]))[0];
-  return { username: r?.username ?? null, receiveEvmAddress: await defaultReceiveEvm(db, userId, r?.receive_evm_address ?? null) };
+  const r = (await db.query<{ username: string | null; receive_evm_address: string | null; display_currency: string | null }>(
+    "select username, receive_evm_address, display_currency from users where id = $1",
+    [userId],
+  ))[0];
+  return {
+    username: r?.username ?? null,
+    receiveEvmAddress: await defaultReceiveEvm(db, userId, r?.receive_evm_address ?? null),
+    displayCurrency: r?.display_currency ?? "USD",
+  };
 }
 
 export async function setUsername(userId: string, raw: string): Promise<MyProfile> {
@@ -152,6 +161,9 @@ export interface CreateTransferInput {
   note?: string;
   /** USDT: the verified wallet the transfer will be sent from. */
   fromAddress?: string;
+  /** A savings-circle contribution: which circle and round it pays. */
+  circleId?: string;
+  round?: number;
 }
 
 /** Step 1: fixes recipient address, exact amount and memo. The wallet then sends exactly this. */
@@ -189,16 +201,21 @@ export async function createTransfer(userId: string, input: CreateTransferInput)
     toAddress = to.polygonAddress;
     fromAddress = from;
   }
+  if (input.circleId) {
+    if (!input.round) throw new AppError("INVALID_ROUND", "Missing circle round.", 422);
+    await checkContribution(db, userId, { circleId: input.circleId, round: input.round, toUserId: recipient.id, currency: input.currency, amountAtomic: atomic });
+  }
   const amount = input.currency === "NIM" ? Number(atomic) / 1e5 : Number(atomic) / 1e6;
   const { rates } = await getRatesSafe();
   const usd = rates ? amount * (input.currency === "NIM" ? rates.nimUsd : rates.usdtUsd) : null;
 
   const rows = await db.query<Row>(
-    `insert into transfers (ref, from_user_id, to_user_id, currency, chain, network, amount, amount_atomic, from_address, to_address, note, memo, status, amount_usd)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'created',$13) returning *`,
+    `insert into transfers (ref, from_user_id, to_user_id, currency, chain, network, amount, amount_atomic, from_address, to_address, note, memo, status, amount_usd, circle_id, circle_round)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'created',$13,$14,$15) returning *`,
     [
       ref, userId, recipient.id, input.currency, input.currency === "NIM" ? "nimiq" : "polygon",
       input.currency === "NIM" ? config.nimiq.network : "polygon", amount, atomic.toString(), fromAddress, toAddress, note, memo, usd,
+      input.circleId ?? null, input.circleId ? input.round : null,
     ],
   );
   log.info("transfer.created", { ref, currency: input.currency });

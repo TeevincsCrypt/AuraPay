@@ -450,6 +450,9 @@ const server = http.createServer(async (req, res) => {
     const out = {};
     for (const id of (url.searchParams.get("ids") ?? "").split(",").filter(Boolean)) {
       out[id] = id === "nimiq-2" ? { usd: 0.0012, usd_24h_change: 1.5 } : id === "tether" ? { usd: 1.0, usd_24h_change: 0 } : { usd: tokenPrice(id), usd_24h_change: 1.2 };
+      // Local currencies (only ones CoinGecko actually supports): distinct from Flutterwave's mock rates.
+      const FIAT = { ngn: 1600, zar: 18 };
+      for (const v of (url.searchParams.get("vs_currencies") ?? "").split(",")) if (FIAT[v] && out[id].usd) out[id][v] = out[id].usd * FIAT[v];
     }
     return send(res, 200, out);
   }

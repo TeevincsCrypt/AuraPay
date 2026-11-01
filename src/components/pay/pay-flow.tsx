@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, CalendarClock, ChevronRight, Globe, Lightbulb, Phone, Smartphone, Tv, Wifi, Zap, Star, Trash2 } from "lucide-react";
+import { ArrowLeft, CalendarClock, ChevronRight, Globe, Repeat, Lightbulb, Phone, Smartphone, Tv, Wifi, Zap, Star, Trash2 } from "lucide-react";
 import { api, ApiError, newRequestId } from "@/lib/client/api";
 import { useApi, useStatus } from "@/lib/client/hooks";
+import { useMoney } from "@/lib/client/money";
 import { useSession } from "@/lib/client/session";
 import { useWallet, WalletActionError } from "@/lib/client/wallet";
 import { countryByCode, TARGET_COUNTRIES, type TargetCountry } from "@/lib/shared/countries";
@@ -14,6 +15,7 @@ import { ORDER_STATUS_LABEL, TERMINAL_ORDER_STATUSES } from "../status-pill";
 import { Button, Card, cx, EmptyState, ErrorState, Field, Input, Keypad, KV, Notice, PageHeader, Segmented, Skeleton, SlideToConfirm, Spinner, TestBadge } from "../ui";
 import { OrderReceipt } from "./receipt";
 import { defaultSchedule, ScheduleConfirmed, ScheduleOptions, ScheduleReview, type ScheduleChoice } from "./schedule";
+import { RepeatSheet, type RecurringItem } from "../recurring";
 
 type Step = "country" | "service" | "details" | "review" | "processing" | "result" | "schedule-review" | "schedule-done";
 
@@ -30,6 +32,10 @@ interface Beneficiary {
   value: string;
   operatorCode: string | null;
   operatorName: string | null;
+  /** Prefill from a recurring reminder. */
+  productCode?: string;
+  amount?: number;
+  amountCurrency?: "local" | "sender";
 }
 
 const SERVICE_META: Record<UtilityService, { label: string; icon: typeof Phone; blurb: string }> = {
@@ -103,6 +109,42 @@ export function PayFlow() {
       alive = false;
     };
   }, [params]);
+
+  // Pay a due reminder: /pay?recurring=<id> opens the bill fully prefilled.
+  const recurringId = params.get("recurring");
+  useEffect(() => {
+    if (!recurringId) return;
+    let alive = true;
+    api<{ item: RecurringItem }>(`/api/recurring/${recurringId}`)
+      .then(({ item }) => {
+        if (!alive || item.kind !== "bill") return;
+        const p = item.payload as Record<string, unknown>;
+        setCountry(String(p.countryCode));
+        setService(p.service as UtilityService);
+        setPrefill({
+          id: item.id,
+          kind: isPhoneService(p.service as UtilityService) ? "phone" : "meter",
+          countryCode: String(p.countryCode),
+          label: typeof p.recipientLabel === "string" ? p.recipientLabel : "",
+          value: String(p.recipient),
+          operatorCode: String(p.operatorCode),
+          operatorName: String(p.operatorName),
+          productCode: typeof p.productCode === "string" ? p.productCode : undefined,
+          amount: typeof p.amount === "number" ? p.amount : undefined,
+          amountCurrency: p.amountCurrency === "sender" ? "sender" : "local",
+        });
+        setStep("details");
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [recurringId]);
+  // Once the bill from a reminder succeeds, the reminder moves to its next due date.
+  useEffect(() => {
+    if (recurringId && order?.status === "successful") void api(`/api/recurring/${recurringId}/paid`, { method: "POST" }).catch(() => {});
+  }, [recurringId, order?.status]);
+  const [repeatOpen, setRepeatOpen] = useState(false);
 
   // Resume a payment that was submitted to the wallet but not yet registered/confirmed.
   useEffect(() => {
@@ -257,6 +299,14 @@ export function PayFlow() {
       ) : step === "result" && order ? (
         <Card className="p-5">
           <OrderReceipt order={order} />
+          {order.status === "successful" && !recurringId ? (
+            <>
+              <Button variant="secondary" className="mt-5 w-full" onClick={() => setRepeatOpen(true)}>
+                <Repeat className="size-4" /> Repeat this payment
+              </Button>
+              <RepeatSheet open={repeatOpen} onClose={() => setRepeatOpen(false)} source={{ orderId: order.id }} label={`${order.operatorName} · ${order.productDescription ?? ""}`} />
+            </>
+          ) : null}
           <div className="mt-5 grid grid-cols-2 gap-2">
             <Button variant="secondary" onClick={() => router.push("/activity")}>
               View activity
@@ -504,8 +554,8 @@ function DetailsStep({
 
   const [recipient, setRecipient] = useState(prefill?.value ? (isPhone ? prefill.value.replace(new RegExp(`^${info.dialCode}`), "") : prefill.value) : "");
   const [chosenOperatorId, setOperatorId] = useState<string | null>(prefill?.operatorCode ?? null);
-  const [productCode, setProductCode] = useState<string | null>(null);
-  const [amountText, setAmountText] = useState("");
+  const [productCode, setProductCode] = useState<string | null>(prefill?.productCode ?? null);
+  const [amountText, setAmountText] = useState(prefill?.amount && !prefill.productCode ? String(prefill.amount) : "");
   const [payCurrency, setPayCurrency] = useState<PayCurrency | null>(null);
   const [save, setSave] = useState(false);
   const [label, setLabel] = useState(prefill?.label ?? "");
@@ -825,6 +875,8 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
   const mm = Math.floor(left / 60000);
   const ss = Math.floor((left % 60000) / 1000);
   const networkMismatch = q.payCurrency === "NIM" && w.hostNetwork && status && w.hostNetwork !== status.nimiq.network;
+  const money = useMoney();
+  const localTotal = money.currency !== "USD" ? money.local(q.totalUsd) : null;
 
   const confirm = useCallback(async () => {
     setBusy(true);
@@ -869,7 +921,7 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
             <p className="num mt-1 text-[30px] font-semibold tracking-[-0.02em] text-fg">
               {fmtCrypto(q.payAmount, q.payCurrency)}
             </p>
-            <p className="num text-[13px] text-fg-3">≈ {fmtUsd(q.totalUsd)}</p>
+            <p className="num text-[13px] text-fg-3">≈ {localTotal ? `${localTotal} · ` : ""}{fmtUsd(q.totalUsd)}</p>
           </div>
           <div className="flex flex-col items-end gap-1.5">
             {order.environment === "sandbox" ? <TestBadge /> : null}

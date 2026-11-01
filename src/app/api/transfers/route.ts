@@ -11,6 +11,8 @@ const Create = z.object({
   amount: z.number().positive().max(100_000_000),
   note: z.string().trim().max(40).optional(),
   fromAddress: z.string().trim().max(64).optional(),
+  circleId: z.string().uuid().optional(),
+  round: z.number().int().min(1).max(20).optional(),
 });
 
 /** Creates a transfer intent: recipient address, exact amount and memo the wallet must send. */

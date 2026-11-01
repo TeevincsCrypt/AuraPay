@@ -2,14 +2,17 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
-import { ArrowDownLeft, AtSign, CalendarClock, Lightbulb, Plus, Send, Smartphone, Tv, ListOrdered, ArrowRight } from "lucide-react";
+import { ArrowDownLeft, AtSign, BellRing, CalendarClock, Lightbulb, Plus, Send, Smartphone, Tv, ListOrdered, ArrowRight } from "lucide-react";
 import { ActivityRow } from "@/components/activity-row";
+import { CurrencyPicker } from "@/components/currency-picker";
+import { amountLabel, fmtDue, type RecurringItem } from "@/components/recurring";
 import { UsernameEditor } from "@/components/transfers/username-editor";
 import { Landing } from "@/components/landing";
 import { Greeting } from "@/components/shell";
 import { Avatar, Card, CircleAction, EmptyState, ErrorState, SectionTitle, Skeleton } from "@/components/ui";
 import { useApi, useStatus } from "@/lib/client/hooks";
 import { useSession } from "@/lib/client/session";
+import { useMoney } from "@/lib/client/money";
 import { useWallet } from "@/lib/client/wallet";
 import { countryByCode } from "@/lib/shared/countries";
 import { fmtNum, fmtUsd } from "@/lib/shared/format";
@@ -35,6 +38,8 @@ function Dashboard({ evm, username }: { evm: string | null; username: string | n
   const usdtQ = useApi<{ balance: number }>(evm ? `/api/wallet/usdt-balance?address=${evm}` : null);
   const activityQ = useApi<{ items: ActivityItem[] }>("/api/activity?limit=5");
   const beneficiariesQ = useApi<{ beneficiaries: Beneficiary[] }>("/api/beneficiaries");
+  const recurringQ = useApi<{ items: RecurringItem[] }>("/api/recurring");
+  const dueItems = (recurringQ.data?.items ?? []).filter((i) => i.due === "overdue" || i.due === "today" || i.due === "soon").slice(0, 3);
 
   const nimTestnet = w.hostNetwork === "testnet" || status?.nimiq.network === "testnet";
   const nimAmount = w.nimiq.balanceLuna !== null ? w.nimiq.balanceLuna / 1e5 : null;
@@ -50,6 +55,9 @@ function Dashboard({ evm, username }: { evm: string | null; username: string | n
   const known = [parts.nim, parts.usdt].filter((v): v is number => v !== null);
   const total = known.length ? known.reduce((s, v) => s + v, 0) : null;
   const loading = !status;
+  const money = useMoney();
+  const localTotal = money.currency !== "USD" ? money.local(total) : null;
+  const val = (usd: number | null) => (usd === null ? null : (money.local(usd) ?? fmtUsd(usd)));
 
   return (
     <div className="space-y-7">
@@ -60,9 +68,14 @@ function Dashboard({ evm, username }: { evm: string | null; username: string | n
         {loading ? (
           <Skeleton className="mx-auto h-12 w-56" />
         ) : (
-          <p className="num text-display font-semibold text-fg">{total !== null ? fmtUsd(total) : "—"}</p>
+          <p className="num text-display font-semibold text-fg">{total !== null ? (localTotal ?? fmtUsd(total)) : "—"}</p>
         )}
-        <p className="mt-1 text-[15px] text-fg-2">Total balance</p>
+        <div className="mt-1 flex items-center justify-center gap-2">
+          <p className="text-[15px] text-fg-2">
+            Total balance{localTotal && total !== null ? <span className="num text-fg-3"> · {fmtUsd(total)}</span> : null}
+          </p>
+          <CurrencyPicker />
+        </div>
         <div className="mt-3 flex flex-wrap justify-center gap-1.5 text-[12px] text-fg-2">
           {w.host === "nimiq-pay" && nimAmount === null ? (
             <button
@@ -73,10 +86,10 @@ function Dashboard({ evm, username }: { evm: string | null; username: string | n
             </button>
           ) : (
             <span className="rounded-full bg-white/70 px-2.5 py-1">
-              NIM {nimAmount !== null ? `${fmtNum(nimAmount, 2)}${nimTestnet ? " · testnet" : parts.nim !== null ? ` · ${fmtUsd(parts.nim)}` : ""}` : "· open in Nimiq Pay"}
+              NIM {nimAmount !== null ? `${fmtNum(nimAmount, 2)}${nimTestnet ? " · testnet" : parts.nim !== null ? ` · ${val(parts.nim)}` : ""}` : "· open in Nimiq Pay"}
             </span>
           )}
-          <span className="rounded-full bg-white/70 px-2.5 py-1">USDT {parts.usdt !== null ? fmtUsd(parts.usdt) : evm ? "—" : "· not linked"}</span>
+          <span className="rounded-full bg-white/70 px-2.5 py-1">USDT {parts.usdt !== null ? `${fmtNum(parts.usdt, 2)}${money.currency !== "USD" ? ` · ${val(parts.usdt)}` : ""}` : evm ? "—" : "· not linked"}</span>
         </div>
         <div className="mx-auto mt-7 grid max-w-[360px] grid-cols-4 gap-2">
           <CircleAction href="/send" icon={<Send className="size-5" />} label="Send" />
@@ -101,6 +114,30 @@ function Dashboard({ evm, username }: { evm: string | null; username: string | n
             <UsernameEditor />
           </div>
         </Card>
+      ) : null}
+
+      {dueItems.length ? (
+        <section>
+          <SectionTitle action={<Link href="/schedules" className="text-[13px] text-fg-3 hover:text-fg-2">See all</Link>}>Due soon</SectionTitle>
+          <Card className="divide-y divide-line">
+            {dueItems.map((i) => (
+              <div key={i.id} className="flex items-center gap-3 px-4 py-3">
+                <span className="grid size-10 shrink-0 place-items-center rounded-full bg-accent-soft text-accent-strong">
+                  <BellRing className="size-[18px]" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[14px] font-medium text-fg">{i.title}</span>
+                  <span className="block text-[12px] text-fg-3">
+                    {amountLabel(i)} · {i.due === "overdue" ? "overdue" : i.due === "today" ? "due today" : `due ${fmtDue(i.nextDueAt)}`}
+                  </span>
+                </span>
+                <Link href={i.payUrl} className="shrink-0 rounded-full bg-accent px-3.5 py-2 text-[13px] font-semibold text-white">
+                  Pay
+                </Link>
+              </div>
+            ))}
+          </Card>
+        </section>
       ) : null}
 
       {/* Quick pay */}

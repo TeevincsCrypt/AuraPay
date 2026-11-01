@@ -37,6 +37,7 @@ class Client {
     return { status: res.status, json };
   }
   get = (p, h) => this.req("GET", p, undefined, h);
+  patch = (p, b) => this.req("PATCH", p, b);
   post = (p, b, h) => this.req("POST", p, b, h);
   del = (p) => this.req("DELETE", p);
 }
@@ -534,6 +535,104 @@ await test("transfers are private to their two parties", async () => {
   eq((await eve.get(`/api/transfers/${nimTransfer.id}`)).status, 404, "read");
   eq((await bob.get(`/api/transfers/${nimTransfer.id}`)).json.transfer.direction, "received", "recipient can read");
 });
+
+console.log("\nLocal currency display");
+await test("display currency is saved and priced at the bill provider's rate", async () => {
+  eq((await alice.post("/api/me/display-currency", { currency: "EUR" })).status, 422, "unsupported");
+  eq((await alice.post("/api/me/display-currency", { currency: "NGN" })).json.displayCurrency, "NGN", "saved");
+  eq((await alice.get("/api/auth/session")).json.user.displayCurrency, "NGN", "in session");
+  const r = (await alice.get("/api/rates?fiat=NGN")).json;
+  assert(Math.abs(r.fiat.perUsd - (PROVIDER === "flutterwave" ? 1500 : 1600)) < 0.01, `rate (Flutterwave, else CoinGecko): ${r.fiat.perUsd}`);
+  eq(r.fiat.source, PROVIDER === "flutterwave" ? "flutterwave" : "coingecko", "source");
+  eq((await alice.get("/api/rates?fiat=USD")).json.fiat.perUsd, 1, "USD");
+});
+
+console.log("\nRecurring payments & bill reminders");
+let reminder;
+await test("a reminder repeats a real payment and is due on its date", async () => {
+  const done = await createOrder(alice, { recipient: "08031234567", amount: 700 });
+  eq((await payNim(alice, done)).status, "successful", "source payment");
+  const r = await alice.post("/api/recurring", { orderId: done.id, frequency: "monthly", firstDueAt: new Date().toISOString() });
+  eq(r.status, 201, "created");
+  reminder = r.json.item;
+  eq(reminder.payload.amount, 700, "amount copied");
+  eq(reminder.payload.recipient, "2348031234567", "recipient copied");
+  eq(reminder.due, "today", "due");
+  eq(reminder.payUrl, `/pay?recurring=${reminder.id}`, "one-tap pay link");
+  eq((await alice.post(`/api/recurring/${reminder.id}/paid`)).json.error?.code, "NO_MATCHING_PAYMENT", "the source payment doesn't count");
+  eq((await bob.get(`/api/recurring/${reminder.id}`)).status, 404, "private");
+});
+await test("paying the bill advances it a month; calendar file has the repeat rule", async () => {
+  const again = await createOrder(alice, { recipient: "08031234567", amount: 700 });
+  eq((await payNim(alice, again)).status, "successful", "paid");
+  const item = (await alice.post(`/api/recurring/${reminder.id}/paid`)).json.item;
+  eq(item.timesPaid, 1, "times paid");
+  const days = (new Date(item.nextDueAt) - Date.now()) / 86_400_000;
+  assert(days > 26 && days < 32, `next due in ~1 month, got ${days.toFixed(1)} days`);
+  eq(item.due, "later", "no longer due");
+  const ics = await fetch(APP + `/api/recurring/${reminder.id}/ics`, { headers: { cookie: alice.cookie } });
+  eq(ics.headers.get("content-type")?.startsWith("text/calendar"), true, "content type");
+  assert((await ics.text()).includes("RRULE:FREQ=MONTHLY"), "monthly rule");
+});
+await test("a transfer reminder settles automatically when the transfer is made", async () => {
+  const r = (await alice.post("/api/recurring", { transferId: nimTransfer.id, frequency: "weekly", firstDueAt: new Date().toISOString() })).json.item;
+  eq(r.kind, "transfer", "kind");
+  assert(r.payUrl.startsWith(`/send?to=${bobName}`), "prefilled send link");
+  const t = (await alice.post("/api/transfers", { toUsername: bobName, currency: "NIM", amount: 12.5 })).json.transfer;
+  await alice.post(`/api/transfers/${t.id}/submit`, { txHash: await registerNimTx(asOrder(t)) });
+  const listed = (await alice.get("/api/recurring")).json.items.find((x) => x.id === r.id);
+  eq(listed.timesPaid, 1, "settled by listing (payment made through the normal flow)");
+  const pause = (await alice.patch(`/api/recurring/${r.id}`, { active: false })).json.item;
+  eq(pause.active, false, "paused");
+  eq((await alice.del(`/api/recurring/${r.id}`)).status, 200, "deleted");
+});
+
+console.log("\nSavings circles (rotating, wallet to wallet)");
+let circle;
+const contribute = async (client, toName, round, amount = 2) => {
+  const r = await client.post("/api/transfers", { toUsername: toName, currency: "NIM", amount, circleId: circle.id, round });
+  if (r.status !== 201) return r;
+  const t = r.json.transfer;
+  return client.post(`/api/transfers/${t.id}/submit`, { txHash: await registerNimTx(asOrder(t)) });
+};
+await test("organizer creates a circle; members are invited by username", async () => {
+  eq((await alice.post("/api/circles", { name: "Fam", currency: "NIM", amount: 2, frequency: "monthly", startAt: new Date().toISOString(), members: ["nobody_xyz_1"] })).json.error?.code, "USER_NOT_FOUND", "unknown member");
+  const r = await alice.post("/api/circles", { name: "Family ajo", currency: "NIM", amount: 2, frequency: "monthly", startAt: new Date().toISOString(), members: [bobName] });
+  eq(r.status, 201, "created");
+  circle = r.json.circle;
+  eq(circle.members.map((m) => m.username).join(","), `${aliceName},${bobName}`, "payout order: organizer first");
+  eq(circle.status, "forming", "forming");
+  const invite = (await bob.get("/api/circles")).json.circles.find((x) => x.id === circle.id);
+  eq(invite.myAction.type, "accept", "bob sees the invite");
+  eq((await alice.post(`/api/circles/${circle.id}/start`)).json.error?.code, "WAITING_FOR_MEMBERS", "can't start before replies");
+  eq((await bob.post(`/api/circles/${circle.id}/start`)).json.error?.code, "NOT_ORGANIZER", "only organizer starts");
+});
+await test("members join; contributions are checked against the round", async () => {
+  eq((await bob.post(`/api/circles/${circle.id}/respond`, { accept: true })).json.circle.myStatus, "joined", "joined");
+  const started = (await alice.post(`/api/circles/${circle.id}/start`)).json.circle;
+  eq(started.status, "active", "active");
+  eq(started.rounds.length, 2, "two rounds");
+  eq(started.rounds[0].recipient, aliceName, "round 1 to organizer");
+  eq((await bob.get(`/api/circles/${circle.id}`)).json.circle.myAction.type, "pay", "bob must pay");
+  eq((await contribute(bob, aliceName, 1, 3)).json.error?.code, "WRONG_AMOUNT", "wrong amount");
+  eq((await contribute(bob, bobName, 1)).json.error?.code, "SELF_TRANSFER", "can't pay yourself");
+  eq((await contribute(alice, aliceName, 1)).json.error?.code, "SELF_TRANSFER", "recipient doesn't pay own round");
+  eq((await contribute(alice, bobName, 1)).json.error?.code, "WRONG_RECIPIENT", "round 1 goes to alice");
+  eq((await contribute(bob, aliceName, 1)).json.transfer.status, "confirmed", "round 1 paid");
+  eq((await contribute(bob, aliceName, 1)).json.error?.code, "ALREADY_CONTRIBUTED", "once per round");
+  const c = (await alice.get(`/api/circles/${circle.id}`)).json.circle;
+  eq(c.rounds[0].complete, true, "round 1 complete");
+  eq(c.currentRound, 2, "now round 2");
+  eq((await new Client().get(`/api/circles/${circle.id}`)).status, 401, "auth");
+});
+await test("the circle completes when every round is paid", async () => {
+  eq((await contribute(bob, aliceName, 2)).json.error?.code, "WRONG_RECIPIENT", "round 2 goes to bob");
+  eq((await contribute(alice, bobName, 2)).json.transfer.status, "confirmed", "round 2 paid");
+  eq((await bob.get(`/api/circles/${circle.id}`)).json.circle.status, "completed", "completed");
+  const got = (await alice.get("/api/activity?limit=50")).json.items.filter((i) => i.category === "transfer_received");
+  assert(got.length >= 1, "alice received her payout in activity");
+});
+
 await test("invest and borrow APIs are gone", async () => {
   for (const p of ["/api/portfolio", "/api/markets/quotes", "/api/borrow"]) eq((await c.get(p)).status, 404, p);
 });

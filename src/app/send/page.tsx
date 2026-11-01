@@ -3,11 +3,13 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AtSign, CheckCircle2, QrCode, Send as SendIcon, Wallet } from "lucide-react";
+import { AtSign, CheckCircle2, QrCode, Repeat, Send as SendIcon, Wallet } from "lucide-react";
+import { RepeatSheet } from "@/components/recurring";
 import { UsernameEditor } from "@/components/transfers/username-editor";
 import { Avatar, Button, Card, cx, Field, Input, Keypad, KV, Notice, PageHeader, Segmented, SlideToConfirm, Spinner, TestBadge } from "@/components/ui";
 import { api, ApiError } from "@/lib/client/api";
 import { useApi, useStatus } from "@/lib/client/hooks";
+import { useMoney } from "@/lib/client/money";
 import { useSession } from "@/lib/client/session";
 import { useWallet, WalletActionError } from "@/lib/client/wallet";
 import { fmtCrypto, fmtUsd, shortAddress } from "@/lib/shared/format";
@@ -35,7 +37,13 @@ function SendFlow() {
   const ratesQ = useApi<{ nimUsd: number; usdtUsd: number }>("/api/rates");
   const listQ = useApi<{ transfers: TransferDTO[]; recent: string[] }>("/api/transfers");
 
+  const money = useMoney();
   const [step, setStep] = useState<Step>("form");
+  const recurringId = params.get("recurring");
+  // A savings-circle contribution: recipient, amount and currency are fixed by the circle.
+  const circleId = params.get("circle");
+  const circleRound = Number(params.get("round") ?? 0) || undefined;
+  const [repeatOpen, setRepeatOpen] = useState(false);
   const [to, setTo] = useState(() => clean(params.get("to") ?? ""));
   const [currency, setCurrency] = useState<PayCurrency>(() => (params.get("currency") === "USDT" ? "USDT" : "NIM"));
   const [amountText, setAmountText] = useState(() => params.get("amount") ?? "");
@@ -71,7 +79,7 @@ function SendFlow() {
       if (currency === "NIM" && w.nimiq.status !== "connected") await w.connectNimiq();
       const r = await api<{ transfer: TransferDTO }>("/api/transfers", {
         method: "POST",
-        json: { toUsername: recipient!.username, currency, amount, note: note.trim() || undefined, fromAddress },
+        json: { toUsername: recipient!.username, currency, amount, note: note.trim() || undefined, fromAddress, ...(circleId ? { circleId, round: circleRound } : {}) },
       });
       setTransfer(r.transfer);
       setStep("review");
@@ -101,6 +109,7 @@ function SendFlow() {
       setStep("sending");
       const r = await api<{ transfer: TransferDTO }>(`/api/transfers/${transfer.id}/submit`, { method: "POST", json: { txHash } });
       setTransfer(r.transfer);
+      if (recurringId && r.transfer.status === "confirmed") void api(`/api/recurring/${recurringId}/paid`, { method: "POST" }).catch(() => {});
       setStep(r.transfer.status === "pending" ? "sending" : "done");
     } catch (e) {
       if (e instanceof WalletActionError) setError(e.kind === "rejected" ? { msg: "Cancelled. Nothing was sent." } : { msg: e.message, unknown: e.kind === "unknown_outcome" });
@@ -108,7 +117,7 @@ function SendFlow() {
     } finally {
       setBusy(false);
     }
-  }, [transfer, w, networkMismatch, status]);
+  }, [transfer, w, networkMismatch, status, recurringId]);
 
   // While confirming on-chain, poll the transfer.
   useEffect(() => {
@@ -120,6 +129,7 @@ function SendFlow() {
         if (stop) return;
         setTransfer(r.transfer);
         if (r.transfer.status !== "pending") {
+          if (recurringId && r.transfer.status === "confirmed") void api(`/api/recurring/${recurringId}/paid`, { method: "POST" }).catch(() => {});
           setStep("done");
           void listQ.refetch();
           return;
@@ -173,7 +183,7 @@ function SendFlow() {
           {ok ? <CheckCircle2 className="size-10 text-up" /> : <SendIcon className="size-9 text-down" />}
           <p className="mt-3 text-base font-medium text-fg">{ok ? `Sent to @${transfer.counterparty}` : "Transfer not confirmed"}</p>
           <p className="num mt-1 text-[28px] font-semibold tracking-[-0.02em] text-fg">{fmtCrypto(transfer.amount, transfer.currency)}</p>
-          {transfer.amountUsd && !testnet ? <p className="num text-[13px] text-fg-3">≈ {fmtUsd(transfer.amountUsd)}</p> : null}
+          {transfer.amountUsd && !testnet ? <p className="num text-[13px] text-fg-3">≈ {money.currency !== "USD" && money.local(transfer.amountUsd) ? `${money.local(transfer.amountUsd)} · ` : ""}{fmtUsd(transfer.amountUsd)}</p> : null}
           {!ok ? <p className="mt-2 text-[13px] text-fg-3">{transfer.failureReason}</p> : null}
         </div>
         <div className="mt-5 border-t border-line pt-2">
@@ -182,8 +192,16 @@ function SendFlow() {
           {transfer.txHash ? <KV k="Transaction" v={<span className="font-mono text-xs">{shortAddress(transfer.txHash, 10, 6)}</span>} /> : null}
           <KV k="Ref" v={transfer.ref} />
         </div>
+        {ok && !recurringId ? (
+          <>
+            <Button variant="secondary" className="mt-5 w-full" onClick={() => setRepeatOpen(true)}>
+              <Repeat className="size-4" /> Make it recurring
+            </Button>
+            <RepeatSheet open={repeatOpen} onClose={() => setRepeatOpen(false)} source={{ transferId: transfer.id }} label={`${fmtCrypto(transfer.amount, transfer.currency)} to @${transfer.counterparty}`} />
+          </>
+        ) : null}
         <div className="mt-5 grid grid-cols-2 gap-2">
-          <Button variant="secondary" onClick={() => router.push("/activity")}>
+          <Button variant="secondary" onClick={() => router.push(circleId ? `/savings/${circleId}` : "/activity")}>
             View activity
           </Button>
           <Button onClick={reset}>Send again</Button>
@@ -219,7 +237,7 @@ function SendFlow() {
             {testnet ? <TestBadge /> : null}
           </div>
           <p className="num mt-4 text-[32px] font-semibold tracking-[-0.02em] text-fg">{fmtCrypto(transfer.amount, transfer.currency)}</p>
-          {transfer.amountUsd && !testnet ? <p className="num text-[13px] text-fg-3">≈ {fmtUsd(transfer.amountUsd)}</p> : null}
+          {transfer.amountUsd && !testnet ? <p className="num text-[13px] text-fg-3">≈ {money.currency !== "USD" && money.local(transfer.amountUsd) ? `${money.local(transfer.amountUsd)} · ` : ""}{fmtUsd(transfer.amountUsd)}</p> : null}
           <div className="mt-4 border-t border-line pt-2">
             {transfer.note ? <KV k="Note" v={transfer.note} /> : null}
             <KV k="To address" v={<span className="font-mono text-xs">{shortAddress(transfer.toAddress, 10, 6)}</span>} />
@@ -247,13 +265,18 @@ function SendFlow() {
 
   return (
     <div className="space-y-5">
+      {circleId ? (
+        <Notice tone="info" title={`Savings circle · round ${circleRound}`}>
+          Your contribution goes straight to @{clean(to)}. The amount and currency are set by the circle.
+        </Notice>
+      ) : null}
       <Field
         label="To"
         htmlFor="to"
         error={lookup.error && clean(to).length >= 3 ? lookup.error.message : self ? "That's you." : null}
         hint={recipient && !self ? `✓ @${recipient.username}${recipient.polygonAddress ? " · NIM & USDT" : " · NIM only"}` : "Their AuraPay @username"}
       >
-        <Input id="to" lead={<AtSign className="size-4" />} placeholder="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={to} onChange={(e) => setTo(e.target.value.replace(/\s/g, ""))} />
+        <Input id="to" lead={<AtSign className="size-4" />} placeholder="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} readOnly={Boolean(circleId)} value={to} onChange={(e) => setTo(e.target.value.replace(/\s/g, ""))} />
       </Field>
       {listQ.data?.recent.length ? (
         <div className="scrollbar-none -mx-4 -mt-2 flex gap-2 overflow-x-auto px-4 sm:mx-0 sm:px-0">
@@ -290,7 +313,7 @@ function SendFlow() {
           />
           <p className="text-[13px] text-fg-2">
             {currency}
-            {usd !== null && !testnet ? ` · ≈ ${fmtUsd(usd)}` : ""}
+            {usd !== null && !testnet ? ` · ≈ ${money.currency !== "USD" && money.local(usd) ? `${money.local(usd)} · ` : ""}${fmtUsd(usd)}` : ""}
           </p>
         </div>
         <div className="mt-3 sm:hidden">

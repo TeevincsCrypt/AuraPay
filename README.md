@@ -7,6 +7,10 @@ AuraPay is a Nimiq Pay Mini App for African users:
 1. **Pay**: airtime, mobile data and electricity in Nigeria, Ghana, Kenya, Uganda, South Africa and Tanzania, paid with **NIM** or **USDT** (fulfilled by Flutterwave Bills; Reloadly also supported). Also **cable TV** (DStv, GOtv, StarTimes) and **internet** plans, and **scheduled bills**: prepay once, and AuraPay pays the bill automatically at the date and time you set, once or every week or month.
 2. **Send & receive by @username**: claim a username and send **NIM** or **USDT (Polygon)** to anyone else's, directly from wallet to wallet. AuraPay never holds the funds; it fixes the recipient, amount and memo, then verifies the transaction on-chain so both sides see it in Activity. Receive with a QR code / request link that opens AuraPay's Send screen in Nimiq Pay.
 
+3. **Savings circles** (ajo / esusu / chama): a group contributes a fixed NIM/USDT amount every week or month and each member takes the pot once, in a set order. Contributions go straight to that round's recipient as verified transfers; AuraPay never holds the pot.
+4. **Recurring payments & bill reminders**: repeat any bill or transfer weekly/monthly; it shows as due on Home and pays in one tap (prefilled), with a calendar file for phone alerts. Bills can also run on prepaid **Autopay**.
+5. **Your currency**: amounts are shown in NIM/USDT and in your chosen currency (USD, NGN, GHS, KES, UGX, ZAR, TZS) at live rates.
+
 AuraPay runs only on **Nimiq** and **Polygon**.
 
 Everything is real: there is no demo mode and no simulated data. Users sign in with a **Nimiq Pay wallet signature**, inside the app with one tap, or from any other browser by approving a QR code / code in Nimiq Pay. Details: [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md). Live integration state: **/status**.
@@ -75,7 +79,7 @@ AURAPAY_TEST_MODE=true RELOADLY_CLIENT_ID=mock-client RELOADLY_CLIENT_SECRET=moc
   RELOADLY_UTILITIES_URL_OVERRIDE=http://localhost:4010/utilities COINGECKO_URL_OVERRIDE=http://localhost:4010/coingecko npm start &
 # Runs against whichever utility provider is configured. For Flutterwave, replace the RELOADLY_* vars with
 #   FLUTTERWAVE_SECRET_KEY=FLWSECK_TEST-mock-X FLUTTERWAVE_URL_OVERRIDE=http://localhost:4010/flw
-npm run test:api   # 45 tests: sign-in (local, remote, tampering, replay), EVM linking, NIM/USDT verification,
+npm run test:api   # 52 tests: sign-in (local, remote, tampering, replay), EVM linking, NIM/USDT verification,
                    # idempotency, exactly-once fulfilment, scheduled bills, refunds, isolation, usernames & transfers
 npm run test:ui    # Playwright: landing, QR sign-in, simulated Nimiq Pay host with real signatures,
                    # every page at mobile + desktop, slide-to-pay purchase, scheduled bill, @username claim, send by username

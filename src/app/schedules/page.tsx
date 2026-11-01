@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { CalendarClock, Plus } from "lucide-react";
+import { CalendarClock, Plus, Repeat } from "lucide-react";
 import { describeSchedule, fmtWhen, ScheduleStatusBadge } from "@/components/pay/schedule";
-import { Button, Card, EmptyState, ErrorState, KV, Notice, PageHeader, Skeleton, TestBadge } from "@/components/ui";
+import { RecurringCard, type RecurringItem } from "@/components/recurring";
+import { Button, Card, EmptyState, ErrorState, KV, Notice, PageHeader, Segmented, Skeleton, TestBadge } from "@/components/ui";
 import { api } from "@/lib/client/api";
 import { useApi } from "@/lib/client/hooks";
 import { countryByCode } from "@/lib/shared/countries";
@@ -102,58 +103,112 @@ function ScheduleCard({ s, onChanged }: { s: BillScheduleDTO; onChanged: () => v
   );
 }
 
-export default function SchedulesPage() {
+function RemindersTab() {
+  const q = useApi<{ items: RecurringItem[] }>("/api/recurring", { pollMs: 60_000 });
+  const items = q.data?.items ?? [];
+  const due = items.filter((i) => i.due === "overdue" || i.due === "today" || i.due === "soon");
+  const rest = items.filter((i) => !due.includes(i));
+  if (q.loading && !q.data) return <Skeleton className="h-32 w-full" />;
+  if (q.error) return <Card><ErrorState message={q.error.message} onRetry={q.refetch} /></Card>;
+  if (!items.length) {
+    return (
+      <Card className="p-2">
+        <EmptyState icon={<Repeat className="size-5" />} title="No reminders yet">
+          After paying a bill or sending to a @username, tap <strong>Repeat this payment</strong>. We&apos;ll remind you when it&apos;s due and prefill everything, so paying takes one tap.
+        </EmptyState>
+      </Card>
+    );
+  }
+  return (
+    <>
+      {due.length ? (
+        <section className="space-y-3">
+          <h2 className="text-[13px] font-medium text-fg-2">Due soon</h2>
+          {due.map((i) => (
+            <RecurringCard key={i.id} item={i} onChanged={q.refetch} />
+          ))}
+        </section>
+      ) : null}
+      {rest.length ? (
+        <section className="space-y-3">
+          <h2 className="text-[13px] font-medium text-fg-2">{due.length ? "Later" : "Your reminders"}</h2>
+          {rest.map((i) => (
+            <RecurringCard key={i.id} item={i} onChanged={q.refetch} />
+          ))}
+        </section>
+      ) : null}
+    </>
+  );
+}
+
+function AutopayTab() {
   const q = useApi<{ schedules: BillScheduleDTO[] }>("/api/schedules", { pollMs: 30_000 });
   const list = q.data?.schedules ?? [];
   const upcoming = list.filter((s) => s.status === "active" || s.status === "payment_pending" || s.status === "quoted");
   const past = list.filter((s) => !upcoming.includes(s));
+  if (q.loading && !q.data) {
+    return (
+      <div className="space-y-3">
+        <Skeleton className="h-40 w-full" />
+        <Skeleton className="h-40 w-full" />
+      </div>
+    );
+  }
+  if (q.error) return <Card><ErrorState message={q.error.message} onRetry={q.refetch} /></Card>;
+  if (!list.length) {
+    return (
+      <Card className="p-2">
+        <EmptyState icon={<CalendarClock className="size-5" />} title="No autopay bills yet">
+          In Pay, pick a bill and choose <strong>Schedule</strong>: prepay once and it pays itself, once or every week or month.
+        </EmptyState>
+      </Card>
+    );
+  }
+  return (
+    <>
+      {upcoming.length ? (
+        <section className="space-y-3">
+          <h2 className="text-[13px] font-medium text-fg-2">Upcoming</h2>
+          {upcoming.map((s) => (
+            <ScheduleCard key={s.id} s={s} onChanged={q.refetch} />
+          ))}
+        </section>
+      ) : null}
+      {past.length ? (
+        <section className="space-y-3">
+          <h2 className="text-[13px] font-medium text-fg-2">Past</h2>
+          {past.map((s) => (
+            <ScheduleCard key={s.id} s={s} onChanged={q.refetch} />
+          ))}
+        </section>
+      ) : null}
+    </>
+  );
+}
 
+export default function SchedulesPage() {
+  const [tab, setTab] = useState<"reminders" | "autopay">("reminders");
   return (
     <div className="mx-auto max-w-[560px] space-y-5">
       <PageHeader
-        title="Scheduled bills"
-        subtitle="Prepaid bills that pay themselves at the time you choose."
+        title="Scheduled"
+        subtitle="Reminders for recurring payments, and bills that pay themselves."
         action={
           <Link href="/pay" className="inline-flex h-9 items-center gap-1.5 rounded-full bg-accent px-3.5 text-[13px] font-semibold text-white">
             <Plus className="size-4" /> New
           </Link>
         }
       />
-      {q.loading && !q.data ? (
-        <div className="space-y-3">
-          <Skeleton className="h-40 w-full" />
-          <Skeleton className="h-40 w-full" />
-        </div>
-      ) : q.error ? (
-        <Card>
-          <ErrorState message={q.error.message} onRetry={q.refetch} />
-        </Card>
-      ) : list.length === 0 ? (
-        <Card className="p-2">
-          <EmptyState icon={<CalendarClock className="size-5" />} title="No scheduled bills yet">
-            In Pay, pick a bill and choose <strong>Schedule</strong> to pay it automatically, once or every week or month.
-          </EmptyState>
-        </Card>
-      ) : (
-        <>
-          {upcoming.length ? (
-            <section className="space-y-3">
-              <h2 className="text-[13px] font-medium text-fg-2">Upcoming</h2>
-              {upcoming.map((s) => (
-                <ScheduleCard key={s.id} s={s} onChanged={q.refetch} />
-              ))}
-            </section>
-          ) : null}
-          {past.length ? (
-            <section className="space-y-3">
-              <h2 className="text-[13px] font-medium text-fg-2">Past</h2>
-              {past.map((s) => (
-                <ScheduleCard key={s.id} s={s} onChanged={q.refetch} />
-              ))}
-            </section>
-          ) : null}
-        </>
-      )}
+      <Segmented<"reminders" | "autopay">
+        className="w-full"
+        value={tab}
+        onChange={setTab}
+        options={[
+          { value: "reminders", label: "Reminders" },
+          { value: "autopay", label: "Autopay" },
+        ]}
+      />
+      {tab === "reminders" ? <RemindersTab /> : <AutopayTab />}
     </div>
   );
 }

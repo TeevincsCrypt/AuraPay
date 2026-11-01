@@ -16,6 +16,7 @@ export interface SessionInfo {
   evmAddresses: string[];
   username: string | null;
   receiveEvmAddress: string | null;
+  displayCurrency: string;
 }
 
 export interface RemoteRequest {

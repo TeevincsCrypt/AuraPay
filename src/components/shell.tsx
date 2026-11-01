@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useId, useState, type ReactNode } from "react";
-import { Home, Send, Zap, CalendarClock, ListOrdered, Activity, LogOut, ExternalLink, CheckCircle2, Wallet } from "lucide-react";
+import { Home, Send, Zap, PiggyBank, ListOrdered, Activity, LogOut, ExternalLink, CheckCircle2, Wallet } from "lucide-react";
 import { useSession } from "@/lib/client/session";
 import { useWallet, WalletActionError } from "@/lib/client/wallet";
 import { fmtCrypto, shortAddress } from "@/lib/shared/format";
 import { SignInPanel } from "./auth/sign-in";
+import { CurrencyPicker } from "./currency-picker";
 import { UsernameEditor } from "./transfers/username-editor";
 import { Avatar, Badge, Button, Card, cx, KV, Notice, Sheet, Spinner } from "./ui";
 
@@ -15,7 +16,7 @@ const NAV = [
   { href: "/", label: "Home", icon: Home },
   { href: "/send", label: "Send", icon: Send },
   { href: "/pay", label: "Pay", icon: Zap },
-  { href: "/schedules", label: "Scheduled", icon: CalendarClock },
+  { href: "/savings", label: "Savings", icon: PiggyBank },
   { href: "/activity", label: "Activity", icon: ListOrdered },
 ] as const;
 
@@ -70,6 +71,10 @@ export function AccountSheet({ open, onClose }: { open: boolean; onClose: () => 
           <div className="rounded-[20px] bg-surface-2 p-4">
             <p className="mb-2 text-sm font-semibold text-fg">Username</p>
             <UsernameEditor compact />
+          </div>
+          <div className="flex items-center justify-between rounded-[20px] bg-surface-2 px-4 py-3">
+            <span className="text-sm font-semibold text-fg">Show amounts in</span>
+            <CurrencyPicker />
           </div>
           <div className="rounded-[20px] bg-surface-2 px-4 py-1">
             <KV k="NIM balance" v={w.nimiq.balanceLuna !== null ? fmtCrypto(w.nimiq.balanceLuna / 1e5, "NIM") : w.host === "nimiq-pay" ? "—" : "Open in Nimiq Pay"} />
