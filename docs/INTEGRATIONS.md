@@ -91,7 +91,7 @@ created ─(unused for 30 min)─▶ expired
 
 ## 3b. Display currency
 
-`users.display_currency` (USD, NGN, GHS, KES, UGX, ZAR, TZS). `GET /api/rates?fiat=NGN` adds USD→local from the bill provider's own rate (Flutterwave `/v3/transfers/rates`, i.e. what bills are priced at), falling back to CoinGecko's USDT price in that currency. No invented rates: if neither answers, local amounts are hidden. Payments are always made in NIM/USDT.
+`users.display_currency` (USD, NGN, GHS, KES, UGX). `GET /api/rates?fiat=NGN` adds USD→local from the bill provider's own rate (Flutterwave `/v3/transfers/rates`, i.e. what bills are priced at), falling back to CoinGecko's USDT price in that currency. No invented rates: if neither answers, local amounts are hidden. Payments are always made in NIM/USDT.
 
 ## 3c. Recurring payments & bill reminders
 

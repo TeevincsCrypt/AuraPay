@@ -13,7 +13,7 @@ import { convertUsd, getRates } from "../rates";
 import { normaliseNimAddress, verifyNimiqTransfer } from "../payments/nimiq";
 import { isEvmAddress, verifyPolygonUsdtTransfer } from "../payments/polygon";
 import { requireUtilityProvider, roundUpCents, toAppError, type Priced } from "../utilities/provider";
-import { processOrder, SERVICE_LABEL, verifyPayment, type CreateOrderInput } from "./utility";
+import { expireStaleQuotes, processOrder, SERVICE_LABEL, verifyPayment, type CreateOrderInput } from "./utility";
 
 /**
  * Scheduled bills.
@@ -413,6 +413,11 @@ async function runSchedule(db: Db, s: Row): Promise<string | null> {
  */
 export async function runDueSchedules(opts: { userId?: string; limit?: number } = {}): Promise<{ ran: number; processed: number }> {
   const db = await getDb();
+  // Housekeeping: unpaid quotes (orders and schedules) expire instead of staying "pending".
+  if (!opts.userId) {
+    await expireStaleQuotes().catch(() => 0);
+    await expireStaleScheduleQuotes().catch(() => 0);
+  }
   const limit = opts.limit ?? 50;
   const due = await db.query<Row>(
     `select * from bill_schedules where status = 'active' and next_run_at <= now() ${opts.userId ? "and user_id = $2" : ""}
@@ -438,11 +443,26 @@ export async function runDueSchedules(opts: { userId?: string; limit?: number } 
 // Cancel & refunds
 // ---------------------------------------------------------------------------
 
-export async function cancelSchedule(userId: string, id: string): Promise<BillScheduleDTO> {
+/** Unpaid schedule quotes past their expiry become "expired" (Activity: failed, not paid). */
+export async function expireStaleScheduleQuotes(userId?: string): Promise<number> {
+  const db = await getDb();
+  const rows = await db.query<Row>(
+    `select * from bill_schedules where status = 'quoted' and expires_at < now() ${userId ? "and user_id = $1" : ""} limit 200`,
+    userId ? [userId] : [],
+  );
+  let n = 0;
+  for (const s of rows) if (await move(db, s, "expired", ["quoted"], { status_reason: "Not paid: the quote expired before a payment was made." })) n++;
+  return n;
+}
+
+export async function cancelSchedule(userId: string, id: string, reason?: "insufficient_funds"): Promise<BillScheduleDTO> {
   const db = await getDb();
   const s = await loadOwned(db, userId, id);
   if (s.status === "quoted") {
-    const moved = await move(db, s, "cancelled", ["quoted"], { cancelled_at: new Date(), next_run_at: null, status_reason: "Cancelled before payment." });
+    const msg = reason === "insufficient_funds" ? "Not paid: insufficient balance in the wallet." : "Cancelled before payment.";
+    const moved = await move(db, s, "cancelled", ["quoted"], { cancelled_at: new Date(), next_run_at: null, status_reason: msg });
+    // Nothing was paid, so the activity entry is a failed (unpaid) one.
+    await updateLedgerBySource(db, "bill_schedules", s.id, "bill_schedule", { status: "failed", details: { statusReason: msg } });
     return toDTO(db, moved ?? (await loadOwned(db, userId, id)));
   }
   if (s.status !== "active") throw new AppError("NOT_CANCELLABLE", `This schedule is ${s.status} and can't be cancelled.`, 409);

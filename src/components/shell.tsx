@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useId, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Home, Send, Zap, PiggyBank, ListOrdered, Activity, LogOut, ExternalLink, CheckCircle2, Wallet } from "lucide-react";
 import { useSession } from "@/lib/client/session";
 import { useWallet, WalletActionError } from "@/lib/client/wallet";
@@ -26,21 +26,18 @@ function isActive(path: string, href: string) {
   return href === "/" ? path === "/" : path === href || path.startsWith(`${href}/`);
 }
 
-export function Logo({ className, light }: { className?: string; light?: boolean }) {
-  const gid = `aura-g-${useId().replace(/:/g, "")}`;
+export function Logo({ className, light, size = 32 }: { className?: string; light?: boolean; size?: number }) {
   return (
     <span className={cx("flex items-center gap-2", className)}>
-      <svg viewBox="0 0 28 28" className="size-8" aria-hidden>
-        <defs>
-          <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="#f08a52" />
-            <stop offset="1" stopColor="#e2482a" />
-          </linearGradient>
-        </defs>
-        <rect width="28" height="28" rx="9" fill={`url(#${gid})`} />
-        <path d="M8.5 19.5 L14 7.5 L19.5 19.5" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M10.9 15.2 H17.1" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" />
-      </svg>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src="/brand/aurapay-mark-128.png"
+        alt=""
+        width={size}
+        height={size}
+        className="shrink-0 rounded-[10px] shadow-[0_2px_8px_rgb(17_21_30/0.25)]"
+        style={{ width: size, height: size }}
+      />
       <span className={cx("text-[18px] font-semibold tracking-[-0.02em]", light ? "text-white" : "text-fg")}>AuraPay</span>
     </span>
   );

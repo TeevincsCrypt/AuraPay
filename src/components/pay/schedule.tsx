@@ -99,6 +99,7 @@ export function ScheduleReview({ schedule, onPaid, onExpired }: { schedule: Bill
   const { data: status } = useStatus();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ msg: string; unknown?: boolean } | null>(null);
+  const [closed, setClosed] = useState(false);
   const [left, setLeft] = useState(() => Math.max(0, new Date(schedule.quote.expiresAt).getTime() - Date.now()));
   useEffect(() => {
     const t = setInterval(() => setLeft(Math.max(0, new Date(schedule.quote.expiresAt).getTime() - Date.now())), 1000);
@@ -108,6 +109,8 @@ export function ScheduleReview({ schedule, onPaid, onExpired }: { schedule: Bill
   const country = countryByCode(schedule.countryCode);
   const phone = schedule.service === "airtime" || schedule.service === "data";
   const networkMismatch = q.payCurrency === "NIM" && w.hostNetwork && status && w.hostNetwork !== status.nimiq.network;
+  const balance = q.payCurrency === "NIM" ? (w.nimiq.balanceLuna !== null ? w.nimiq.balanceLuna / 1e5 : null) : w.evm.usdtBalance;
+  const insufficient = balance !== null && balance < q.payAmount;
 
   const confirm = useCallback(async () => {
     setBusy(true);
@@ -125,7 +128,11 @@ export function ScheduleReview({ schedule, onPaid, onExpired }: { schedule: Bill
       const r = await api<{ schedule: BillScheduleDTO }>(`/api/schedules/${schedule.id}/payment`, { method: "POST", json: { txHash } });
       onPaid(r.schedule);
     } catch (e) {
-      if (e instanceof WalletActionError) setError(e.kind === "rejected" ? { msg: "Payment cancelled. Nothing was charged." } : { msg: e.message, unknown: e.kind === "unknown_outcome" });
+      if (e instanceof WalletActionError && e.kind === "insufficient") {
+        await api(`/api/schedules/${schedule.id}/cancel`, { method: "POST", json: { reason: "insufficient_funds" } }).catch(() => {});
+        setClosed(true);
+        setError({ msg: `${e.message} Nothing was charged and this schedule was closed. Top up your wallet, then start again.` });
+      } else if (e instanceof WalletActionError) setError(e.kind === "rejected" ? { msg: "Payment cancelled. Nothing was charged." } : { msg: e.message, unknown: e.kind === "unknown_outcome" });
       else setError({ msg: e instanceof ApiError ? e.message : (e as Error).message });
     } finally {
       setBusy(false);
@@ -167,16 +174,21 @@ export function ScheduleReview({ schedule, onPaid, onExpired }: { schedule: Bill
           {error.msg}
         </Notice>
       ) : null}
-      {left <= 0 ? (
+      {insufficient && !closed && left > 0 ? (
+        <Notice tone="warn" title={`Not enough ${q.payCurrency}`}>
+          You have {fmtCrypto(balance, q.payCurrency)} but prepaying costs {fmtCrypto(q.payAmount, q.payCurrency)}. Top up, choose fewer payments, or pay with the other currency.
+        </Notice>
+      ) : null}
+      {left <= 0 || closed ? (
         <Button size="lg" variant="secondary" onClick={onExpired}>
-          Quote expired — get a new price
+          {closed ? "Start again" : "Quote expired — get a new price"}
         </Button>
       ) : (
         <>
           <SlideToConfirm
             label={busy ? "Waiting for your wallet…" : `Slide to prepay ${fmtCrypto(q.payAmount, q.payCurrency)}`}
             loading={busy}
-            disabled={Boolean(error?.unknown) || Boolean(networkMismatch)}
+            disabled={Boolean(error?.unknown) || Boolean(networkMismatch) || insufficient}
             onConfirm={() => void confirm()}
           />
           <p className="num text-center text-xs text-fg-3">

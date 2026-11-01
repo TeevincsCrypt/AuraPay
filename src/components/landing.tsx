@@ -65,7 +65,7 @@ const PILLARS = [
   {
     icon: Zap,
     title: "Pay",
-    text: "Airtime, data, electricity, cable TV and internet across six African countries, paid with NIM or USDT in seconds.",
+    text: "Airtime, data, electricity, cable TV and internet across Nigeria, Ghana, Kenya and Uganda, paid with NIM or USDT in seconds.",
   },
   {
     icon: CalendarClock,
@@ -87,6 +87,8 @@ export function Landing() {
 
       <section className="mx-auto grid max-w-[1120px] items-center gap-10 px-5 pt-12 pb-14 lg:grid-cols-[1.1fr_0.9fr] lg:pt-20">
         <div className="text-center lg:text-left">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/brand/aurapay-mark-512.png" alt="AuraPay" width={88} height={88} className="mx-auto mb-5 size-[88px] rounded-[26px] shadow-[0_18px_40px_-12px_rgb(226_72_42/0.55)] lg:mx-0" />
           <span className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1.5 text-xs font-medium text-fg-2 shadow-[var(--shadow-card)]">
             <BadgeCheck className="size-3.5 text-accent" /> A Nimiq Pay Mini App
           </span>

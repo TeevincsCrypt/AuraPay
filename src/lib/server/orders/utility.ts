@@ -294,6 +294,26 @@ export async function submitPayment(userId: string, orderId: string, txHashRaw: 
   const db = await getDb();
   let order = await loadOwned(db, userId, orderId);
 
+  if (order.status === "expired" && txHashRaw) {
+    // A payment for a closed/expired quote is never fulfilled; it's recorded and sent to
+    // review so the funds (if they really arrived) are refunded.
+    const chain: "nimiq" | "polygon" = order.pay_currency === "NIM" ? "nimiq" : "polygon";
+    const txHash = txHashRaw.trim().toLowerCase();
+    try {
+      await db.transaction(async (tx) => {
+        await tx.query(
+          `insert into payments (order_kind, order_id, direction, chain, tx_hash, payer_address, amount_atomic, status)
+           values ('utility', $1, 'in', $2, $3, $4, $5, 'submitted')`,
+          [order.id, chain, txHash, order.payer_address ?? null, order.pay_amount_atomic],
+        );
+        await transition(tx, order, "requires_review", ["expired"], { status_reason: "Payment sent after this quote was closed. It won't be delivered; we'll check it and refund it." });
+      });
+    } catch (err) {
+      if (/unique|duplicate/i.test(errorMessage(err))) throw new AppError("TX_ALREADY_USED", "This payment has already been used for another order.", 409);
+      throw err;
+    }
+    return advanceOrder(userId, orderId);
+  }
   if (order.status !== "quoted") {
     // Idempotent: a second submit just advances / returns the current state.
     return advanceOrder(userId, orderId);
@@ -484,6 +504,32 @@ export async function processOrder(orderId: string): Promise<UtilityOrderStatus 
   if (order.status === "paid") order = await fulfil(db, order);
   if (order.status === "provider_pending") order = await pollProvider(db, order);
   return order.status;
+}
+
+/**
+ * Quotes that were never paid expire, and so does their activity entry ("Failed · not paid").
+ * Expiry used to happen only when the order itself was opened, which left unpaid quotes
+ * showing as "Pending" in Activity indefinitely.
+ */
+export async function expireStaleQuotes(userId?: string): Promise<number> {
+  const db = await getDb();
+  const rows = await db.query<OrderRow>(
+    `select * from utility_orders where status = 'quoted' and expires_at < now() ${userId ? "and user_id = $1" : ""} order by expires_at limit 200`,
+    userId ? [userId] : [],
+  );
+  let n = 0;
+  for (const o of rows) if (await transition(db, o, "expired", ["quoted"], { status_reason: "Not paid: the quote expired before a payment was made." })) n++;
+  return n;
+}
+
+/** Closes an unpaid quote right away, e.g. when the wallet reports insufficient funds. */
+export async function cancelUnpaidOrder(userId: string, orderId: string, reason: "insufficient_funds" | "cancelled"): Promise<UtilityOrderDTO> {
+  const db = await getDb();
+  const order = await loadOwned(db, userId, orderId);
+  if (order.status !== "quoted") return toDTO(order, await latestPaymentHash(db, order.id));
+  const msg = reason === "insufficient_funds" ? "Not paid: insufficient balance in the wallet." : "Not paid: cancelled.";
+  const moved = await transition(db, order, "expired", ["quoted"], { status_reason: msg });
+  return toDTO(moved ?? order, null);
 }
 
 // ---------------------------------------------------------------------------

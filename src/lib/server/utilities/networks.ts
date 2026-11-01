@@ -26,12 +26,6 @@ const PREFIXES: Record<string, Record<string, string[]>> = {
     MTN: ["77", "78", "76", "79"],
     Airtel: ["70", "75", "74"],
   },
-  TZ: {
-    Vodacom: ["74", "75", "76"],
-    Airtel: ["68", "69", "78"],
-    Yas: ["65", "67", "71", "77"],
-    Halotel: ["61", "62"],
-  },
 };
 
 /** Words that identify each network in provider product names. */

@@ -4,12 +4,12 @@
 
 AuraPay is a Nimiq Pay Mini App for African users:
 
-1. **Pay**: airtime, mobile data and electricity in Nigeria, Ghana, Kenya, Uganda, South Africa and Tanzania, paid with **NIM** or **USDT** (fulfilled by Flutterwave Bills; Reloadly also supported). Also **cable TV** (DStv, GOtv, StarTimes) and **internet** plans, and **scheduled bills**: prepay once, and AuraPay pays the bill automatically at the date and time you set, once or every week or month.
+1. **Pay**: airtime, mobile data and electricity in Nigeria, Ghana, Kenya and Uganda, paid with **NIM** or **USDT** (fulfilled by Flutterwave Bills; Reloadly also supported). Also **cable TV** (DStv, GOtv, StarTimes) and **internet** plans, and **scheduled bills**: prepay once, and AuraPay pays the bill automatically at the date and time you set, once or every week or month.
 2. **Send & receive by @username**: claim a username and send **NIM** or **USDT (Polygon)** to anyone else's, directly from wallet to wallet. AuraPay never holds the funds; it fixes the recipient, amount and memo, then verifies the transaction on-chain so both sides see it in Activity. Receive with a QR code / request link that opens AuraPay's Send screen in Nimiq Pay.
 
 3. **Savings circles** (ajo / esusu / chama): a group contributes a fixed NIM/USDT amount every week or month and each member takes the pot once, in a set order. Contributions go straight to that round's recipient as verified transfers; AuraPay never holds the pot.
 4. **Recurring payments & bill reminders**: repeat any bill or transfer weekly/monthly; it shows as due on Home and pays in one tap (prefilled), with a calendar file for phone alerts. Bills can also run on prepaid **Autopay**.
-5. **Your currency**: amounts are shown in NIM/USDT and in your chosen currency (USD, NGN, GHS, KES, UGX, ZAR, TZS) at live rates.
+5. **Your currency**: amounts are shown in NIM/USDT and in your chosen currency (USD, NGN, GHS, KES, UGX) at live rates.
 
 AuraPay runs only on **Nimiq** and **Polygon**.
 

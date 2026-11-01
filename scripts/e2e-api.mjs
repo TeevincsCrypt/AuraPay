@@ -225,9 +225,10 @@ await test("status reports live integrations only", async () => {
 await test("countries list only provider-supported services", async () => {
   const { json } = await c.get("/api/utilities/countries");
   const ng = json.countries.find((x) => x.code === "NG");
-  const tz = json.countries.find((x) => x.code === "TZ");
   assert(ng.services.airtime && ng.services.data && ng.services.electricity, "NG should have all three");
-  assert(!tz.services.airtime && !tz.services.data, "TZ unsupported in mock");
+  eq(json.countries.map((x) => x.code).join(","), "NG,GH,KE,UG", "only the four served countries");
+  const ke = json.countries.find((x) => x.code === "KE");
+  assert(!ke.services.data, "services the provider doesn't offer aren't shown");
 });
 await test("phone validation + operator auto-detect", async () => {
   const ok = await c.get("/api/utilities/detect?country=NG&phone=08031234567");
@@ -263,6 +264,20 @@ await test("verified payment → exactly one sandbox top-up", async () => {
 await test("idempotent create with same clientRequestId", async () => {
   const body = { clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorCode: CODES.airtime, recipient: "08031234567", amount: 500, amountCurrency: "local", payCurrency: "NIM" };
   eq((await c.post("/api/orders", body)).json.order.id, (await c.post("/api/orders", body)).json.order.id, "same order");
+});
+await test("an unpaid order (insufficient funds) shows as failed, never stuck pending", async () => {
+  const o = await createOrder(c, { amount: 900 });
+  const item = () => c.get("/api/activity?limit=50").then((r) => r.json.items.find((i) => i.sourceId === o.id));
+  eq((await item()).status, "pending", "pending while awaiting payment");
+  const closed = (await c.post(`/api/orders/${o.id}/cancel`, { reason: "insufficient_funds" })).json.order;
+  eq(closed.status, "expired", "order closed");
+  assert(/insufficient/i.test(closed.statusReason), "reason recorded");
+  eq((await item()).status, "failed", "activity shows failed");
+  const before = await mock("/_test/counters");
+  const late = (await c.post(`/api/orders/${o.id}/payment`, { txHash: await registerNimTx(o) })).json.order;
+  eq(late.status, "requires_review", "a late payment goes to review for refund");
+  eq((await mock("/_test/counters")).topupCalls, before.topupCalls, "never delivered");
+  eq((await new Client().post(`/api/orders/${o.id}/cancel`, { reason: "cancelled" })).status, 401, "auth");
 });
 await test("simulated payments no longer exist", async () => {
   const r = await c.post("/api/orders", { clientRequestId: randomUUID(), service: "airtime", countryCode: "NG", operatorCode: CODES.airtime, recipient: "08031234567", amount: 1000, amountCurrency: "local", payCurrency: "DEMO" });

@@ -12,8 +12,6 @@ export const DISPLAY_CURRENCIES = [
   { code: "GHS", label: "Ghanaian cedi", flag: "🇬🇭" },
   { code: "KES", label: "Kenyan shilling", flag: "🇰🇪" },
   { code: "UGX", label: "Ugandan shilling", flag: "🇺🇬" },
-  { code: "ZAR", label: "South African rand", flag: "🇿🇦" },
-  { code: "TZS", label: "Tanzanian shilling", flag: "🇹🇿" },
 ] as const;
 
 interface RatesResponse {

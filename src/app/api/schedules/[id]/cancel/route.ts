@@ -11,5 +11,6 @@ export const POST = handler(async (req, ctx: { params: Promise<{ id: string }> }
   const { id } = await ctx.params;
   if (!z.string().uuid().safeParse(id).success) throw new AppError("SCHEDULE_NOT_FOUND", "Schedule not found.", 404);
   const user = await requireUser();
-  return json({ schedule: await cancelSchedule(user.id, id) });
+  const body = (await req.json().catch(() => ({}))) as { reason?: string };
+  return json({ schedule: await cancelSchedule(user.id, id, body.reason === "insufficient_funds" ? "insufficient_funds" : undefined) });
 });

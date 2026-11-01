@@ -877,6 +877,10 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
   const networkMismatch = q.payCurrency === "NIM" && w.hostNetwork && status && w.hostNetwork !== status.nimiq.network;
   const money = useMoney();
   const localTotal = money.currency !== "USD" ? money.local(q.totalUsd) : null;
+  const [closed, setClosed] = useState(false);
+  // Known wallet balance below the amount: say so up front instead of failing in the wallet.
+  const balance = q.payCurrency === "NIM" ? (w.nimiq.balanceLuna !== null ? w.nimiq.balanceLuna / 1e5 : null) : w.evm.usdtBalance;
+  const insufficient = balance !== null && balance < q.payAmount;
 
   const confirm = useCallback(async () => {
     setBusy(true);
@@ -898,7 +902,13 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
       const r = await api<{ order: UtilityOrderDTO }>(`/api/orders/${order.id}/payment`, { method: "POST", json: { txHash } });
       onSubmitted(r.order);
     } catch (e) {
-      if (e instanceof WalletActionError) {
+      if (e instanceof WalletActionError && e.kind === "insufficient") {
+        // Nothing was sent: close the quote now so Activity shows it as failed, not pending.
+        await api(`/api/orders/${order.id}/cancel`, { method: "POST", json: { reason: "insufficient_funds" } }).catch(() => {});
+        savePending(null);
+        setClosed(true);
+        setError({ msg: `${e.message} Nothing was charged and this order was closed. Top up your wallet, then start again.` });
+      } else if (e instanceof WalletActionError) {
         if (e.kind !== "rejected") setError({ msg: e.message, unknown: e.kind === "unknown_outcome" });
         else setError({ msg: "Payment cancelled. Nothing was charged." });
       } else if (e instanceof ApiError && e.code === "QUOTE_EXPIRED") {
@@ -968,13 +978,19 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
         </Notice>
       ) : null}
 
-      {expired ? (
+      {insufficient && !closed && !expired ? (
+        <Notice tone="warn" title={`Not enough ${q.payCurrency}`}>
+          You have {fmtCrypto(balance, q.payCurrency)} but this costs {fmtCrypto(q.payAmount, q.payCurrency)}
+          {q.payCurrency === "USDT" ? " (plus a little POL for the network fee)" : ""}. Top up, or go back and pay with the other currency.
+        </Notice>
+      ) : null}
+      {expired || closed ? (
         <Button size="lg" variant="secondary" onClick={onExpired}>
-          Quote expired — get a new price
+          {closed ? "Start again" : "Quote expired — get a new price"}
         </Button>
       ) : (
         <>
-          <SlideToConfirm label={busy ? "Waiting for your wallet…" : `Slide to pay ${fmtCrypto(q.payAmount, q.payCurrency)}`} loading={busy} disabled={Boolean(error?.unknown) || Boolean(networkMismatch)} onConfirm={() => void confirm()} />
+          <SlideToConfirm label={busy ? "Waiting for your wallet…" : `Slide to pay ${fmtCrypto(q.payAmount, q.payCurrency)}`} loading={busy} disabled={Boolean(error?.unknown) || Boolean(networkMismatch) || insufficient} onConfirm={() => void confirm()} />
           <p className="num text-center text-xs text-fg-3">
             Price held for {mm}:{String(ss).padStart(2, "0")} · Ref {order.ref}
           </p>

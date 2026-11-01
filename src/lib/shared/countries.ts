@@ -15,8 +15,6 @@ export const TARGET_COUNTRIES: TargetCountry[] = [
   { code: "GH", name: "Ghana", flag: "🇬🇭", dialCode: "233", currency: "GHS" },
   { code: "KE", name: "Kenya", flag: "🇰🇪", dialCode: "254", currency: "KES" },
   { code: "UG", name: "Uganda", flag: "🇺🇬", dialCode: "256", currency: "UGX" },
-  { code: "ZA", name: "South Africa", flag: "🇿🇦", dialCode: "27", currency: "ZAR" },
-  { code: "TZ", name: "Tanzania", flag: "🇹🇿", dialCode: "255", currency: "TZS" },
 ];
 
 export const TARGET_COUNTRY_CODES = TARGET_COUNTRIES.map((c) => c.code) as [string, ...string[]];

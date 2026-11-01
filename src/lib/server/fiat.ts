@@ -10,7 +10,7 @@ import { getUtilityProvider } from "./utilities/provider";
  * if neither answers, the local amount is simply not shown.
  */
 
-export const DISPLAY_CURRENCIES = ["USD", "NGN", "GHS", "KES", "UGX", "ZAR", "TZS"] as const;
+export const DISPLAY_CURRENCIES = ["USD", "NGN", "GHS", "KES", "UGX"] as const;
 export type DisplayCurrency = (typeof DISPLAY_CURRENCIES)[number];
 
 const TTL = 10 * 60_000;
