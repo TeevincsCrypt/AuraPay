@@ -23,7 +23,7 @@ AuraPay stores accounts, orders and activity in Postgres. Supabase's free tier i
 DATABASE_URL=postgresql://postgres.abcdefghijkl:yourpassword@aws-0-us-east-1.pooler.supabase.com:6543/postgres
 ```
 
-AuraPay creates its tables on first use (each migration runs once). Set `DB_AUTO_MIGRATE=false` only if you apply migrations yourself with `supabase db push`.
+AuraPay creates its tables on first use (each migration runs once), in its own `aurapay` schema, so it never touches tables other apps keep in the same Supabase project (`public`). `DB_SCHEMA` changes the schema name. Set `DB_AUTO_MIGRATE=false` only if you apply migrations yourself with `supabase db push`.
 
 If you connected Supabase through Vercel's **Supabase integration** instead, you don't need to add anything: AuraPay also reads the `POSTGRES_URL` it creates.
 

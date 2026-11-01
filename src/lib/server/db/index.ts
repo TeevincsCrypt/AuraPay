@@ -29,6 +29,9 @@ interface DbState {
   kind: DbKind;
 }
 
+/** Postgres schema holding all AuraPay tables. */
+const DB_SCHEMA = (process.env.DB_SCHEMA ?? "aurapay").replace(/[^a-z0-9_]/gi, "") || "aurapay";
+
 const globalForDb = globalThis as unknown as { __aurapayDb?: Promise<DbState> };
 
 async function createPostgres(url: string): Promise<DbState> {
@@ -48,20 +51,33 @@ async function createPostgres(url: string): Promise<DbState> {
       params?: never[],
     ) => PromiseLike<unknown> & { simple(): PromiseLike<unknown> };
   };
+  // AuraPay's tables live in their own schema so they never collide with other apps
+  // in the same database. Transaction poolers (Supabase :6543) don't keep session
+  // settings between statements, so search_path is set per transaction (SET LOCAL).
+  const setPath = `set local search_path to "${DB_SCHEMA}", public`;
+  type Tx = Runner;
+  const begin = <R>(fn: (tx: Tx) => Promise<R>): Promise<R> =>
+    sql.begin(async (tx) => {
+      const t = tx as unknown as Tx;
+      await t.unsafe(setPath);
+      return fn(t);
+    }) as Promise<R>;
   const wrap = (s: Runner, root: boolean): Db => ({
     async query<T extends Row>(text: string, params: unknown[] = []) {
+      if (root) return begin(async (t) => (await t.unsafe(text, params as never[])) as T[]);
       return (await s.unsafe(text, params as never[])) as T[];
     },
     async exec(script: string) {
+      if (root) return void (await begin(async (t) => t.unsafe(script).simple()));
       await s.unsafe(script).simple();
     },
     async transaction<R>(fn: (tx: Db) => Promise<R>): Promise<R> {
       if (!root) return fn(wrap(s, false));
-      return (await sql.begin((tx) =>
-        fn(wrap(tx as unknown as Runner, false)),
-      )) as R;
+      return begin((t) => fn(wrap(t, false)));
     },
   });
+  // Create the schema itself (outside any search_path).
+  await sql.unsafe(`create schema if not exists "${DB_SCHEMA}"`);
   return { db: wrap(sql as unknown as Runner, true), kind: "postgres" };
 }
 
@@ -70,6 +86,7 @@ async function createPglite(dir: string | undefined): Promise<DbState> {
   if (dir) await mkdir(dir, { recursive: true });
   const pg = dir ? new PGlite(dir) : new PGlite();
   await pg.waitReady;
+  await pg.exec(`create schema if not exists "${DB_SCHEMA}"; set search_path to "${DB_SCHEMA}", public;`);
 
   type Runner = {
     query<T>(text: string, params?: unknown[]): Promise<{ rows: T[] }>;
