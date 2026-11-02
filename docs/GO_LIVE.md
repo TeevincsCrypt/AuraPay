@@ -21,6 +21,7 @@ AuraPay switches to live fulfilment automatically when `FLUTTERWAVE_SECRET_KEY` 
 | `POLYGON_MERCHANT_ADDRESS` | your `0x…` address that receives USDT |
 | `ADMIN_API_TOKEN` | a long random value (for refunds) |
 | `CRON_SECRET` | a long random value; set up the 5-minute runner call (see ENV_SETUP) |
+| `NIM_POLYGON_TOKEN` | optional: NIM's Polygon contract, once bridged (enables Swap) |
 | `ALLOW_REAL_PAYMENTS_FOR_SANDBOX` | **delete it** |
 | `AURAPAY_TEST_MODE` | **delete it** if present |
 | `AURAPAY_SERVICE_FEE_BPS` | optional, default `150` (1.5%) |
@@ -39,6 +40,8 @@ Safety rules enforced by the code: live top-ups can't be paid with testnet NIM, 
 ## 4. Operating it
 
 - **Scheduled bills are prepaid.** Customers pay every run up front; AuraPay pays the provider at each run time from your Flutterwave balance, at the local amount fixed when they scheduled. You carry the crypto/local-currency price movement in between. If a customer cancels, their unrun payments are owed back: list them with `GET /api/admin/schedules`, send the refund from the merchant wallet, then record it with `POST /api/admin/schedules/<id>/refund` (`{"refundTxHash":"<hash>"}`, verified on-chain).
+
+- **Earn and Swap** run entirely from the user's wallet on Polygon; users need a little **POL** for gas (the screens warn below 0.01 POL). AuraPay only records and verifies the transactions.
 
 - Customer payments arrive in your merchant wallets. Bills are paid from your Flutterwave balance, so keep it topped up and convert crypto to local currency as needed.
 - If Flutterwave fails after a verified payment (e.g. low balance), the order goes to **requires review** and the customer sees that. To resolve:

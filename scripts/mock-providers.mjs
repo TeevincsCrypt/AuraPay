@@ -77,6 +77,60 @@ const customIds = new Map(); // customIdentifier -> transactionId
 const bills = new Map();
 const nimTxs = new Map(); // hash -> tx
 const polyTxs = new Map(); // hash -> { receipt, timestamp }
+
+// ---- Polygon DeFi state (Aave V3 Pool, aPolUSDT, QuickSwap V2) for eth_call
+const P = {
+  USDT: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
+  AUSDT: "0x6ab707aca953edaefbc4fd23ba73294241490620",
+  POOL: "0x794a61358d6845594f94dc1db02a252b5b4814ad",
+  ROUTER: "0xa5e0829caced8ffdd4de3c43696c57f7d7a678ff",
+  FACTORY: "0x5757371414417b8c6caad45baef941abc7d3ab32",
+  NIM: "0x4e494d0000000000000000000000000000000001", // NIM on Polygon (test token, 5 decimals)
+  PAIR: "0x4e494d0000000000000000000000000000000002",
+};
+const defi = {
+  bal: new Map(), // `${token}:${owner}` -> bigint
+  allowance: new Map(), // `${token}:${owner}:${spender}` -> bigint
+  pol: 2n * 10n ** 18n,
+  liquidityRateRay: 36_800_000_000_000_000_000_000_000n, // 3.68% APR ≈ 3.75% APY
+  reserves: { nim: 50_000_000n * 100_000n, usdt: 60_000n * 1_000_000n }, // 50M NIM / 60k USDT
+};
+const DEFI_ABI = parseAbi([
+  "function balanceOf(address) view returns (uint256)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function decimals() view returns (uint8)",
+  "function getReserveData(address asset) view returns ((uint256 configuration, uint128 liquidityIndex, uint128 currentLiquidityRate, uint128 variableBorrowIndex, uint128 currentVariableBorrowRate, uint128 currentStableBorrowRate, uint40 lastUpdateTimestamp, uint16 id, address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress, address interestRateStrategyAddress, uint128 accruedToTreasury, uint128 unbacked, uint128 isolationModeTotalDebt))",
+  "function factory() view returns (address)",
+  "function getPair(address tokenA, address tokenB) view returns (address)",
+  "function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
+  "function token0() view returns (address)",
+  "function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[] amounts)",
+]);
+function polygonCall(to, data) {
+  to = String(to).toLowerCase();
+  const { functionName: fn, args = [] } = decodeFunctionData({ abi: DEFI_ABI, data });
+  const r = (result) => encodeFunctionResult({ abi: DEFI_ABI, functionName: fn, result });
+  const a = (x) => String(x).toLowerCase();
+  if (fn === "balanceOf") {
+    const dflt = to === P.USDT ? 25_500_000n : to === P.NIM ? 10_000n * 100_000n : 0n;
+    return r(defi.bal.get(`${to}:${a(args[0])}`) ?? dflt);
+  }
+  if (fn === "allowance") return r(defi.allowance.get(`${to}:${a(args[0])}:${a(args[1])}`) ?? 0n);
+  if (fn === "decimals") return r(to === P.NIM ? 5 : 6);
+  if (fn === "getReserveData") return r({ configuration: 0n, liquidityIndex: 10n ** 27n, currentLiquidityRate: defi.liquidityRateRay, variableBorrowIndex: 10n ** 27n, currentVariableBorrowRate: 0n, currentStableBorrowRate: 0n, lastUpdateTimestamp: 0, id: 1, aTokenAddress: P.AUSDT, stableDebtTokenAddress: P.AUSDT, variableDebtTokenAddress: P.AUSDT, interestRateStrategyAddress: P.AUSDT, accruedToTreasury: 0n, unbacked: 0n, isolationModeTotalDebt: 0n });
+  if (fn === "factory") return r(P.FACTORY);
+  if (fn === "getPair") return r([a(args[0]), a(args[1])].sort().join() === [P.NIM, P.USDT].sort().join() ? P.PAIR : "0x0000000000000000000000000000000000000000");
+  if (fn === "token0") return r(P.NIM);
+  if (fn === "getReserves") return r([defi.reserves.nim, defi.reserves.usdt, 0]);
+  if (fn === "getAmountsOut") {
+    const [amountIn, path] = args;
+    const nimIn = a(path[0]) === P.NIM;
+    const rin = nimIn ? defi.reserves.nim : defi.reserves.usdt, rout = nimIn ? defi.reserves.usdt : defi.reserves.nim;
+    const inFee = amountIn * 997n;
+    return r([amountIn, (inFee * rout) / (rin * 1000n + inFee)]);
+  }
+  throw new Error("unsupported call " + fn);
+}
 let nextTopup = 9000;
 let nextBill = 500;
 let polygonHead = 60_000_000;
@@ -271,6 +325,13 @@ const server = http.createServer(async (req, res) => {
   }
   if (p === "/_test/evm-tx" && req.method === "POST") {
     evmTxs.set(body.hash.toLowerCase(), body);
+    return send(res, 200, { ok: true });
+  }
+  if (p === "/_test/defi" && req.method === "POST") {
+    // { balances: [{token, owner, units}], allowances: [{token, owner, spender, units}], pol }
+    for (const b of body.balances ?? []) defi.bal.set(`${b.token.toLowerCase()}:${b.owner.toLowerCase()}`, BigInt(b.units));
+    for (const x of body.allowances ?? []) defi.allowance.set(`${x.token.toLowerCase()}:${x.owner.toLowerCase()}:${x.spender.toLowerCase()}`, BigInt(x.units));
+    if (body.pol !== undefined) defi.pol = BigInt(body.pol);
     return send(res, 200, { ok: true });
   }
   if (p === "/_test/counters") return send(res, 200, { ...counters, topupsByCustomId: Object.fromEntries([...customIds.entries()]) });
@@ -507,7 +568,15 @@ const server = http.createServer(async (req, res) => {
       const t = [...polyTxs.values()].find((x) => x.receipt.blockNumber === body.params?.[0]);
       return ok({ number: body.params?.[0], timestamp: `0x${Math.floor((t?.timestamp ?? Date.now()) / 1000).toString(16)}` });
     }
-    if (body.method === "eth_call") return ok(`0x${(25_500_000).toString(16).padStart(64, "0")}`); // 25.5 USDT
+    if (body.method === "eth_call") {
+      try {
+        return ok(polygonCall(body.params[0].to, body.params[0].data));
+      } catch (e) {
+        return send(res, 200, { jsonrpc: "2.0", id: body.id, error: { code: 3, message: String(e.message) } });
+      }
+    }
+    if (body.method === "eth_getBalance") return ok(`0x${defi.pol.toString(16)}`);
+    if (body.method === "eth_chainId") return ok("0x89");
     return send(res, 200, { jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "Method not found" } });
   }
 

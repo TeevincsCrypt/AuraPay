@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
-import { ArrowDownLeft, AtSign, BellRing, CalendarClock, Lightbulb, Plus, Send, Smartphone, Tv, ListOrdered, ArrowRight } from "lucide-react";
+import { ArrowDownLeft, AtSign, BellRing, CalendarClock, PiggyBank, Plus, Send, Tv, ListOrdered, ArrowRight, Zap } from "lucide-react";
 import { ActivityRow } from "@/components/activity-row";
 import { CurrencyPicker } from "@/components/currency-picker";
 import { amountLabel, fmtDue, type RecurringItem } from "@/components/recurring";
@@ -94,8 +94,8 @@ function Dashboard({ evm, username }: { evm: string | null; username: string | n
         <div className="mx-auto mt-7 grid max-w-[360px] grid-cols-4 gap-2">
           <CircleAction href="/send" icon={<Send className="size-5" />} label="Send" />
           <CircleAction href="/receive" icon={<ArrowDownLeft className="size-5" />} label="Receive" />
-          <CircleAction href="/pay?service=airtime" icon={<Smartphone className="size-5" />} label="Airtime" />
-          <CircleAction href="/pay?service=electricity" icon={<Lightbulb className="size-5" />} label="Power" />
+          <CircleAction href="/pay" icon={<Zap className="size-5" />} label="Pay" />
+          <CircleAction href="/earn" icon={<PiggyBank className="size-5" />} label="Earn" />
         </div>
       </section>
 
@@ -169,12 +169,18 @@ function Dashboard({ evm, username }: { evm: string | null; username: string | n
       </section>
 
       {/* Promo cards */}
-      <section className="scrollbar-none -mx-4 flex gap-3 overflow-x-auto px-4 sm:mx-0 sm:grid sm:grid-cols-3 sm:px-0">
+      <section className="scrollbar-none -mx-4 flex gap-3 overflow-x-auto px-4 sm:mx-0 sm:grid sm:grid-cols-2 sm:px-0">
         <Link href="/schedules" className="relative w-[78%] shrink-0 overflow-hidden rounded-[24px] bg-gradient-to-br from-[#e8f6ef] to-[#eef7fb] p-5 sm:w-auto">
           <p className="text-[15px] font-semibold text-fg">Bills on autopilot</p>
           <p className="mt-1 max-w-[70%] text-[13px] text-fg-2">Schedule airtime, data, power or TV to pay itself every week or month.</p>
           <span className="mt-3 inline-flex items-center gap-1 text-[13px] font-medium text-accent">Schedule <ArrowRight className="size-3.5" /></span>
           <CalendarClock className="absolute -right-2 -bottom-3 size-24 text-[#bfe3d1]" strokeWidth={1.4} />
+        </Link>
+        <Link href="/earn" className="relative w-[78%] shrink-0 overflow-hidden rounded-[24px] bg-gradient-to-br from-[#fff6dc] to-[#fde9d7] p-5 sm:w-auto">
+          <p className="text-[15px] font-semibold text-fg">Earn on idle USDT</p>
+          <p className="mt-1 max-w-[70%] text-[13px] text-fg-2">Supply to Aave on Polygon from your own wallet. Withdraw any time, then pay a bill.</p>
+          <span className="mt-3 inline-flex items-center gap-1 text-[13px] font-medium text-accent">Start earning <ArrowRight className="size-3.5" /></span>
+          <PiggyBank className="absolute -right-2 -bottom-3 size-24 text-[#f3d7a6]" strokeWidth={1.4} />
         </Link>
         <Link href="/send" className="relative w-[78%] shrink-0 overflow-hidden rounded-[24px] bg-gradient-to-br from-[#eef1ff] to-[#fbeef7] p-5 sm:w-auto">
           <p className="text-[15px] font-semibold text-fg">Send by @username</p>

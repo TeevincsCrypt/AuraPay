@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Marketing asset sources (teaser renderer, social images): not app code.
+    "brand/**",
   ]),
 ]);
 

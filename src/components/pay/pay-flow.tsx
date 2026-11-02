@@ -556,7 +556,10 @@ function DetailsStep({
   const [chosenOperatorId, setOperatorId] = useState<string | null>(prefill?.operatorCode ?? null);
   const [productCode, setProductCode] = useState<string | null>(prefill?.productCode ?? null);
   const [amountText, setAmountText] = useState(prefill?.amount && !prefill.productCode ? String(prefill.amount) : "");
-  const [payCurrency, setPayCurrency] = useState<PayCurrency | null>(null);
+  // Hand-off from Earn / Swap: /pay?payWith=USDT&from=earn preselects USDT.
+  const handoff = useSearchParams();
+  const [payCurrency, setPayCurrency] = useState<PayCurrency | null>(handoff.get("payWith") === "USDT" ? "USDT" : handoff.get("payWith") === "NIM" ? "NIM" : null);
+  const handoffFrom = handoff.get("from");
   const [save, setSave] = useState(false);
   const [label, setLabel] = useState(prefill?.label ?? "");
   const [submitting, setSubmitting] = useState(false);
@@ -679,6 +682,9 @@ function DetailsStep({
       <h2 className="flex items-center gap-2 text-[15px] font-medium text-fg">
         <span className="text-xl">{info.flag}</span> {SERVICE_META[service].label} · {info.name}
       </h2>
+      {handoffFrom === "earn" || handoffFrom === "swap" ? (
+        <Notice tone="success">Paying with the USDT you just {handoffFrom === "earn" ? "withdrew from Earn" : "swapped"}. It&apos;s already selected below.</Notice>
+      ) : null}
 
       {isPhone ? (
         <Field

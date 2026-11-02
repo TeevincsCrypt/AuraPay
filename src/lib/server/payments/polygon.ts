@@ -19,6 +19,10 @@ interface Receipt {
   logs: { address: string; topics: string[]; data: string }[];
 }
 
+export async function polygonRpc<T>(method: string, params: unknown[]): Promise<T | null> {
+  return rpc<T>(method, params);
+}
+
 async function rpc<T>(method: string, params: unknown[]): Promise<T | null> {
   const res = await fetch(config.polygon.rpcUrl, {
     method: "POST",

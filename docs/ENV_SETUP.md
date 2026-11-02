@@ -97,6 +97,10 @@ USDT exists only on Polygon *mainnet*, so it is disabled while the utility provi
 
 ---
 
+### `NIM_POLYGON_TOKEN` (optional): NIM ↔ USDT swap
+
+Leave empty until NIM exists on Polygon. When Nimiq's bridge is live, set it to the NIM token contract on Polygon; the Swap screen turns on by itself as soon as a QuickSwap NIM/USDT pool with liquidity exists. Earn needs no configuration (it uses `POLYGON_RPC_URL`).
+
 ### `CRON_SECRET`: scheduled bills
 
 Scheduled bills are paid by a runner endpoint, `/api/cron/schedules`, which pays every bill that's due. Something has to call it regularly, and it only accepts calls that send this secret.

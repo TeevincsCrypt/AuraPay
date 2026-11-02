@@ -19,6 +19,7 @@ import { mkdirSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { ed25519 } from "@noble/curves/ed25519";
 import { sha256 } from "@noble/hashes/sha256";
+import { decodeFunctionData, parseAbi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 const { chromium } = createRequire(import.meta.url)("playwright");
@@ -63,12 +64,51 @@ async function noOverflow(page) {
 }
 
 /** A browser context that behaves like Nimiq Pay's WebView (providers injected before page scripts). */
+// ---------------------------------------------------------------------------
+// A tiny Polygon simulator for the fake wallet: every Aave / QuickSwap transaction the app sends
+// is decoded, its effect applied to the mock chain state, and a matching receipt registered, so
+// the server's receipt verification runs exactly as on mainnet.
+const DEFI = { USDT: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", AUSDT: "0x6ab707aca953edaefbc4fd23ba73294241490620", POOL: "0x794a61358d6845594f94dc1db02a252b5b4814ad", ROUTER: "0xa5e0829caced8ffdd4de3c43696c57f7d7a678ff", NIM: "0x4e494d0000000000000000000000000000000001", PAIR: "0x4e494d0000000000000000000000000000000002" };
+const TX_ABI = parseAbi([
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode)",
+  "function withdraw(address asset, uint256 amount, address to) returns (uint256)",
+  "function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) returns (uint256[] amounts)",
+]);
+const chain = { usdt: 25_500_000n, ausdt: 0n, nim: 1_000_000_000n, reserves: { nim: 5_000_000_000_000n, usdt: 60_000_000_000n } };
+const pad32 = (a) => `0x${a.replace(/^0x/, "").padStart(64, "0")}`;
+const xfer = (token, from, to, units) => ({ address: token, topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", pad32(from), pad32(to)], data: pad32(units.toString(16)) });
+const post = (path, body) => fetch(`${MOCK}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+async function simulatePolygonTx(tx, owner) {
+  const to = String(tx.to).toLowerCase();
+  if (![DEFI.USDT, DEFI.NIM, DEFI.POOL, DEFI.ROUTER].includes(to)) return; // e.g. USDT bill payments are registered by the test itself
+  const { functionName: fn, args } = decodeFunctionData({ abi: TX_ABI, data: tx.data });
+  let logs = [];
+  if (fn === "approve") await post("/_test/defi", { allowances: [{ token: to, owner, spender: String(args[0]), units: args[1].toString() }] });
+  // An exact approval is consumed by the transferFrom inside supply / swap.
+  const spend = (token, spender, units) => post("/_test/defi", { allowances: [{ token, owner, spender, units: "0" }] }).then(() => units);
+  if (fn === "supply") await spend(DEFI.USDT, DEFI.POOL, args[1]);
+  if (fn === "swapExactTokensForTokens") await spend(String(args[2][0]).toLowerCase(), DEFI.ROUTER, args[0]);
+  if (fn === "supply") { chain.usdt -= args[1]; chain.ausdt += args[1]; logs = [xfer(DEFI.USDT, owner, DEFI.AUSDT, args[1])]; }
+  if (fn === "withdraw") { const amt = args[1] > chain.ausdt ? chain.ausdt : args[1]; chain.ausdt -= amt; chain.usdt += amt; logs = [xfer(DEFI.USDT, DEFI.AUSDT, owner, amt)]; }
+  if (fn === "swapExactTokensForTokens") {
+    const [amountIn, , path] = args; const nimIn = String(path[0]).toLowerCase() === DEFI.NIM;
+    const rin = nimIn ? chain.reserves.nim : chain.reserves.usdt, rout = nimIn ? chain.reserves.usdt : chain.reserves.nim, f = amountIn * 997n;
+    const out = (f * rout) / (rin * 1000n + f);
+    if (nimIn) { chain.nim -= amountIn; chain.usdt += out; } else { chain.usdt -= amountIn; chain.nim += out; }
+    logs = [xfer(String(path[0]).toLowerCase(), owner, DEFI.PAIR, amountIn), xfer(String(path[1]).toLowerCase(), DEFI.PAIR, owner, out)];
+  }
+  await post("/_test/defi", { balances: [{ token: DEFI.USDT, owner, units: chain.usdt.toString() }, { token: DEFI.AUSDT, owner, units: chain.ausdt.toString() }, { token: DEFI.NIM, owner, units: chain.nim.toString() }] });
+  await post("/_test/polygon-tx", { hash: tx.hash, timestamp: Date.now(), receipt: { status: "0x1", blockNumber: "0x3938700", from: owner, to, logs } });
+}
+
 async function nimiqPayContext(opts, { nimKey, evmAccount, sentTxs }) {
   const ctx = await browser.newContext(opts);
   await ctx.exposeBinding("__nimSign", (_s, message) => nimSign(nimKey, message));
   await ctx.exposeBinding("__evmSign", (_s, message) => evmAccount.signMessage({ message }));
-  await ctx.exposeBinding("__recordTx", (_s, tx) => {
+  await ctx.exposeBinding("__recordTx", async (_s, tx) => {
     sentTxs.push(tx);
+    if (tx.kind === "evm") await simulatePolygonTx(tx, evmAccount.address.toLowerCase());
     return null;
   });
   const nimAddress = (await (await fetch(`${APP}/api/status`)).json()) && null; // warm-up
@@ -98,6 +138,7 @@ async function nimiqPayContext(opts, { nimKey, evmAccount, sentTxs }) {
           if (method === "eth_chainId") return "0x89";
           if (method === "wallet_switchEthereumChain") return null;
           if (method === "personal_sign") return window.__evmSign(params[0]);
+          if (method === "eth_getTransactionReceipt") return { status: "0x1", transactionHash: params[0] };
           if (method === "eth_sendTransaction") {
             const h = "0x" + Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("");
             await window.__recordTx({ kind: "evm", ...params[0], hash: h });
@@ -209,6 +250,7 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
     ["receive", "/receive", `@${MY_NAME}`],
     ["pay", "/pay", "Where are you sending to?"],
     ["schedules", "/schedules", "Reminders for recurring payments"],
+    ["earn", "/earn", "Put idle USDT to work"],
     ["savings", "/savings", "Save together in a circle"],
     ["activity", "/activity", "Every bill"],
     ["status", "/status", "Integrations"],
@@ -325,6 +367,8 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await page.screenshot({ path: `${OUT}/mobile-schedules.png`, fullPage: true });
     });
     await step("cable TV: provider packages and smartcard field", async () => {
+      const st = await (await fetch(APP + "/api/status")).json();
+      if (st.utilities?.provider !== "flutterwave") return; // cable TV is a Flutterwave-only catalogue
       await page.goto(APP + "/pay?service=cable", { waitUntil: "networkidle" });
       await page.getByRole("button", { name: /Nigeria/ }).click();
       await page.getByRole("button", { name: /DSTV/ }).click();
@@ -332,6 +376,51 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await page.getByLabel("Smartcard / IUC number").waitFor();
       await noOverflow(page);
       await page.screenshot({ path: `${OUT}/mobile-cable.png`, fullPage: true });
+    });
+    await step("earn: approve + deposit USDT to Aave, verified on Polygon", async () => {
+      await page.goto(APP + "/earn", { waitUntil: "networkidle" });
+      await page.getByText("Supplied on Aave").waitFor();
+      await page.getByText(/3\.7\d%/).waitFor({ timeout: 10_000 });
+      await page.getByLabel("Amount to deposit").fill("10");
+      await page.screenshot({ path: `${OUT}/earn-1.png`, fullPage: true });
+      const before = sentTxs.length;
+      await page.getByRole("button", { name: /Deposit to Earn/ }).click();
+      await page.getByText("Deposited 10.00 USDT").waitFor({ timeout: 30_000 });
+      const evm = sentTxs.slice(before).filter((t) => t.kind === "evm").map((t) => t.data.slice(0, 10));
+      if (evm.join() !== "0x095ea7b3,0x617ba037") throw new Error(`expected approve then supply, got ${evm.join()}`);
+      await page.getByText("10.00 USDT").first().waitFor();
+      await page.screenshot({ path: `${OUT}/earn-2-deposited.png`, fullPage: true });
+    });
+    await step("earn: withdraw max, then hand the USDT to Pay", async () => {
+      await page.getByRole("radio", { name: "Withdraw" }).click();
+      await page.getByRole("button", { name: "Max" }).click();
+      await page.getByRole("button", { name: /Withdraw everything/ }).click();
+      await page.getByText(/Withdrew 10\.00 USDT/).waitFor({ timeout: 30_000 });
+      await page.getByRole("button", { name: /Add to savings circle|Pay circle/ }).waitFor();
+      await page.screenshot({ path: `${OUT}/earn-3-withdrawn.png`, fullPage: true });
+      await page.getByRole("button", { name: /Pay a bill/ }).click();
+      await page.getByRole("button", { name: /Nigeria/ }).click();
+      await page.getByRole("button", { name: /Airtime/ }).first().click();
+      await page.getByText(/Paying with the USDT you just withdrew from Earn/).waitFor({ timeout: 10_000 });
+      const usdt = page.getByRole("radio", { name: /Pay with USDT/ });
+      if ((await usdt.getAttribute("aria-checked")) !== "true") throw new Error("USDT not preselected");
+    });
+    await step("swap: live QuickSwap quote, approve + swap USDT → NIM", async () => {
+      await page.goto(APP + "/swap", { waitUntil: "networkidle" });
+      const cfg = await (await fetch(APP + "/api/swap/config")).json();
+      if (!cfg.swap?.enabled) {
+        // No NIM token on Polygon configured: the page must say so honestly and offer the alternatives.
+        await page.getByText(/NIM isn't on Polygon yet/).waitFor();
+        await page.getByText("Earn on USDT").waitFor();
+        await page.screenshot({ path: `${OUT}/swap-unavailable.png`, fullPage: true });
+        return;
+      }
+      await page.getByLabel(/You pay \(USDT\)/).fill("5");
+      await page.getByText(/Minimum received/).waitFor({ timeout: 10_000 });
+      await page.screenshot({ path: `${OUT}/swap-1-quote.png`, fullPage: true });
+      await page.getByRole("button", { name: /Swap USDT → NIM/ }).click();
+      await page.getByText(/Swapped 5(\.0+)? USDT →/).waitFor({ timeout: 30_000 });
+      await page.screenshot({ path: `${OUT}/swap-2-done.png`, fullPage: true });
     });
     await step("send NIM to another @username: review, slide, verified on-chain", async () => {
       const friend = await apiUserWithName(FRIEND_NAME);

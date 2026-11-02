@@ -101,6 +101,23 @@ A self-custodial wallet can't be charged automatically, so `recurring_items` are
 
 `savings_circles` + `circle_members` (payout `position`). The organizer invites @usernames; members accept/decline (USDT circles require a verified wallet); the organizer starts it once everyone has replied. Round *k* goes to member *k* and is due at start + (k−1) periods. A contribution is an ordinary transfer intent with `circleId` + `round`: it must come from a member other than the round's recipient, go to that recipient, and be exactly the contribution amount and currency, once per member per round (`ALREADY_CONTRIBUTED`). Progress is derived from confirmed transfers; the circle completes when every round is fully paid. Members pay each other directly, so AuraPay never holds the pot (it can't force a member to pay; members should trust each other).
 
+## 3e. Earn (Aave V3) and Swap (QuickSwap), Polygon only
+
+Both run from the user's own wallet through injected `window.ethereum` (Nimiq Pay's Polygon wallet). The app always switches to Polygon (`0x89`) first, needs a little POL for gas, and never holds funds.
+
+| Contract | Address |
+|---|---|
+| USDT | `0xc2132D05D31c914a87C6611C10748AEb04B58e8F` |
+| Aave V3 Pool | `0x794a61358D6845594F94dc1DB02A252b5b4814aD` |
+| aPolUSDT | `0x6ab707Aca953eDAeFBc4fD23bA73294241490620` |
+| QuickSwap V2 Router | `0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff` |
+
+* **Position** (`GET /api/earn/position?address=`): wallet USDT, aPolUSDT (= supplied + interest), POL, Pool allowance and the APY from `getReserveData(USDT).currentLiquidityRate` (RAY, compounded per second). Not hardcoded.
+* **Deposit**: `approve(Pool, exact amount)` (reset to 0 first if a smaller allowance exists, as USDT requires), then `supply(USDT, amount, user, 0)`. **Withdraw**: `withdraw(USDT, amount | MAX_UINT256, user)`. No borrowing anywhere.
+* **Swap**: enabled only if `NIM_POLYGON_TOKEN` is set **and** `router.factory().getPair(NIM, USDT)` exists with ≥ 1 USDT of liquidity (`GET /api/swap/config`). Quotes use `getAmountsOut`; the swap is `swapExactTokensForTokens(amountIn, minOut (−0.5%), [in, out], user, now+10 min)` after an exact router approval.
+* **Verification**: every tx is recorded (`POST /api/defi/actions {kind, txHash, from, …}` → `defi_actions` + an Activity row) and confirmed only from its Polygon **receipt**: status success, sent by the user's verified wallet to the Pool/Router, and a USDT `Transfer` user → aPolUSDT (supply), aPolUSDT → user (withdraw; actual amount incl. "max"), or tokenIn from / tokenOut to the user (swap). A hash can be recorded once (`TX_ALREADY_USED`). Unconfirmed after 30 min → failed.
+* **Hand-off**: after a withdrawal or a swap into USDT, "Pay a bill" opens `/pay?payWith=USDT&from=earn|swap` (USDT preselected) and "Add to savings circle" opens your due USDT circle contribution.
+
 ## 4. Data model
 
 Migrations: `supabase/migrations/` (applied in order on first use). `stock_trades` and `lending_actions` remain from the removed Invest/Borrow features but are unused.

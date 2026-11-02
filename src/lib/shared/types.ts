@@ -165,7 +165,10 @@ export type ActivityCategory =
   | "refund"
   | "bill_schedule"
   | "transfer_sent"
-  | "transfer_received";
+  | "transfer_received"
+  | "earn_deposit"
+  | "earn_withdraw"
+  | "swap";
 
 export interface ActivityItem {
   id: string;

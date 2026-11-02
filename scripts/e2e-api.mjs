@@ -648,6 +648,90 @@ await test("the circle completes when every round is paid", async () => {
   assert(got.length >= 1, "alice received her payout in activity");
 });
 
+console.log("\nEarn: Aave V3 on Polygon (wallet-sent, receipt-verified)");
+const POOL = "0x794a61358d6845594f94dc1db02a252b5b4814ad";
+const ROUTER = "0xa5e0829caced8ffdd4de3c43696c57f7d7a678ff";
+const USDT_P = "0xc2132d05d31c914a87c6611c10748aeb04b58e8f";
+const AUSDT = "0x6ab707aca953edaefbc4fd23ba73294241490620";
+const NIM_P = "0x4e494d0000000000000000000000000000000001";
+const PAIR = "0x4e494d0000000000000000000000000000000002";
+const pad32 = (a) => `0x${a.replace(/^0x/, "").padStart(64, "0")}`;
+const transferLog = (token, from, to, units) => ({ address: token, topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", pad32(from), pad32(to)], data: pad32(BigInt(units).toString(16)) });
+const polyReceipt = async ({ from = PAYER_POLY, to, logs, status = "0x1" }) => {
+  const hash = polyHash();
+  await mock("/_test/polygon-tx", { hash, timestamp: Date.now(), receipt: { status, blockNumber: "0x3938700", from, to, logs } });
+  return hash;
+};
+await test("position is read live from Polygon (aPolUSDT, wallet USDT, POL, live APY)", async () => {
+  const p = (await alice.get(`/api/earn/position?address=${PAYER_POLY}`)).json.position;
+  eq(p.walletUsdt, 25.5, "wallet USDT");
+  eq(p.supplied, 0, "nothing supplied yet");
+  eq(p.pol, 2, "POL for gas");
+  assert(p.apy > 0.0370 && p.apy < 0.0380, `APY from Aave's liquidity rate ≈3.75%, got ${p.apy}`);
+  eq((await alice.get("/api/earn/position?address=0x3333333333333333333333333333333333333333")).status, 422, "only your verified wallets");
+});
+await test("a deposit (supply) is confirmed from its receipt and shows in Activity", async () => {
+  const hash = await polyReceipt({ to: POOL, logs: [transferLog(USDT_P, PAYER_POLY, AUSDT, 10_000_000)] });
+  const a = (await alice.post("/api/defi/actions", { kind: "earn_supply", txHash: hash, from: PAYER_POLY, amount: "10" })).json.action;
+  eq(a.status, "confirmed", "confirmed");
+  eq(a.amountIn, 10, "amount from the Transfer log");
+  const item = (await alice.get("/api/activity?limit=50")).json.items.find((i) => i.category === "earn_deposit");
+  eq(item?.status, "successful", "activity");
+});
+await test("a max withdraw records the real amount; it hands off to Pay with USDT", async () => {
+  const hash = await polyReceipt({ to: POOL, logs: [transferLog(USDT_P, AUSDT, PAYER_POLY, 10_003_412)] });
+  const a = (await alice.post("/api/defi/actions", { kind: "earn_withdraw", txHash: hash, from: PAYER_POLY })).json.action;
+  eq(a.status, "confirmed", "confirmed");
+  eq(a.amountOut, 10.003412, "principal + interest from the log");
+  // the USDT can go straight into a bill quote paid in USDT
+  const o = await createOrder(alice, { payCurrency: "USDT", payerAddress: PAYER_POLY });
+  eq(o.quote.payCurrency, "USDT", "bill payable with the withdrawn USDT");
+});
+await test("reverted, misdirected, foreign-wallet and reused transactions never count", async () => {
+  const reverted = await polyReceipt({ to: POOL, status: "0x0", logs: [] });
+  eq((await alice.post("/api/defi/actions", { kind: "earn_supply", txHash: reverted, from: PAYER_POLY, amount: "1" })).json.action.status, "failed", "reverted");
+  const wrongTo = await polyReceipt({ to: ROUTER, logs: [transferLog(USDT_P, PAYER_POLY, AUSDT, 1_000_000)] });
+  eq((await alice.post("/api/defi/actions", { kind: "earn_supply", txHash: wrongTo, from: PAYER_POLY, amount: "1" })).json.action.status, "failed", "wrong contract");
+  const notMine = await polyReceipt({ to: POOL, logs: [transferLog(USDT_P, PAYER_POLY, AUSDT, 1_000_000)] });
+  eq((await alice.post("/api/defi/actions", { kind: "earn_supply", txHash: notMine, from: "0x3333333333333333333333333333333333333333", amount: "1" })).json.error?.code, "PAYER_NOT_VERIFIED", "unverified wallet");
+  const once = await polyReceipt({ to: POOL, logs: [transferLog(USDT_P, PAYER_POLY, AUSDT, 2_000_000)] });
+  await alice.post("/api/defi/actions", { kind: "earn_supply", txHash: once, from: PAYER_POLY, amount: "2" });
+  eq((await alice.post("/api/defi/actions", { kind: "earn_supply", txHash: once, from: PAYER_POLY, amount: "2" })).json.action.status, "confirmed", "same user: idempotent");
+  const bobEvm = privateKeyToAccount(`0x${"22".repeat(32)}`).address.toLowerCase();
+  eq((await bob.post("/api/defi/actions", { kind: "earn_supply", txHash: once, from: bobEvm, amount: "2" })).json.error?.code, "TX_ALREADY_USED", "another user can't claim it");
+});
+
+console.log("\nSwap: QuickSwap NIM ↔ USDT on Polygon");
+await test("swap is offered only when NIM exists on Polygon with a QuickSwap pool", async () => {
+  const cfg = (await alice.get("/api/swap/config")).json.swap;
+  if (PROVIDER === "flutterwave") {
+    eq(cfg.enabled, true, "enabled (NIM_POLYGON_TOKEN set, pair exists)");
+    eq(cfg.pair, PAIR, "pair found via router.factory().getPair()");
+    eq(cfg.nimDecimals, 5, "decimals read from the token");
+  } else {
+    eq(cfg.enabled, false, "disabled without NIM on Polygon");
+    assert(/Polygon/.test(cfg.reason), "explains why");
+    eq((await alice.get("/api/swap/quote?direction=USDT_NIM&amount=5")).json.error?.code, "SWAP_UNAVAILABLE", "no quotes");
+  }
+});
+await test("quotes come from the router; a swap is verified from its receipt", async () => {
+  if (PROVIDER !== "flutterwave") return;
+  const q = (await alice.get("/api/swap/quote?direction=USDT_NIM&amount=6")).json.quote;
+  const rin = 60_000n * 1_000_000n, rout = 50_000_000n * 100_000n, inFee = 6_000_000n * 997n;
+  eq(q.amountOut, ((inFee * rout) / (rin * 1000n + inFee)).toString(), "constant-product quote");
+  eq(q.path.join(), `${USDT_P},${NIM_P}`, "direct path");
+  assert(q.priceImpact >= 0 && q.priceImpact < 0.01, "small price impact");
+  const b = (await alice.get(`/api/swap/balances?address=${PAYER_POLY}`)).json.balances;
+  eq(b.nim, 10_000, "NIM on Polygon balance");
+  const hash = await polyReceipt({ to: ROUTER, logs: [transferLog(USDT_P, PAYER_POLY, PAIR, 6_000_000), transferLog(NIM_P, PAIR, PAYER_POLY, BigInt(q.amountOut))] });
+  const a = (await alice.post("/api/defi/actions", { kind: "swap", txHash: hash, from: PAYER_POLY, amount: "6", direction: "USDT_NIM" })).json.action;
+  eq(a.status, "confirmed", "confirmed");
+  eq(a.amountIn, 6, "USDT in");
+  eq(a.amountOut, Number(BigInt(q.amountOut)) / 1e5, "NIM out (5 decimals)");
+  const item = (await alice.get("/api/activity?limit=50")).json.items.find((i) => i.category === "swap");
+  eq(item?.title, "Swapped USDT → NIM", "activity");
+});
+
 await test("invest and borrow APIs are gone", async () => {
   for (const p of ["/api/portfolio", "/api/markets/quotes", "/api/borrow"]) eq((await c.get(p)).status, 404, p);
 });

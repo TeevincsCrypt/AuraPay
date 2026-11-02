@@ -124,6 +124,12 @@ export const config = {
   /** Allow real-value payments to fund SANDBOX (test) top-ups. Off by default. */
   allowRealPaymentsForSandbox: bool("ALLOW_REAL_PAYMENTS_FOR_SANDBOX"),
 
+  /**
+   * NIM as an ERC-20 on Polygon ("NIM on Polygon", minted by Nimiq's bridge). The QuickSwap
+   * NIM ↔ USDT swap is enabled only when this is set *and* a QuickSwap pair exists on-chain.
+   */
+  nimPolygonToken: env("NIM_POLYGON_TOKEN"),
+
   pricing: {
     serviceFeeBps: int("AURAPAY_SERVICE_FEE_BPS", 150),
     minServiceFeeUsd: Number(env("AURAPAY_MIN_SERVICE_FEE_USD") ?? "0.10"),
