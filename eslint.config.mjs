@@ -10,6 +10,7 @@ const eslintConfig = defineConfig([
     // Default ignores of eslint-config-next:
     ".next/**",
     "out/**",
+    "contracts/**",
     "build/**",
     "next-env.d.ts",
     // Marketing asset sources (teaser renderer, social images): not app code.

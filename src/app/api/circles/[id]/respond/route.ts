@@ -10,7 +10,7 @@ const Body = z.object({ accept: z.boolean() });
 export const POST = handler(async (req, ctx: { params: Promise<{ id: string }> }) => {
   enforceRateLimit(req, "circles:respond", 30, 60);
   const { id } = await ctx.params;
-  if (!z.string().uuid().safeParse(id).success) throw new AppError("CIRCLE_NOT_FOUND", "Savings circle not found.", 404);
+  if (!z.string().uuid().safeParse(id).success) throw new AppError("CIRCLE_NOT_FOUND", "Thrift not found.", 404);
   const user = await requireUser();
   const { accept } = await parseBody(req, Body);
   return json({ circle: await respondToInvite(user.id, id, accept) });

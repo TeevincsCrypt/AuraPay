@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export const POST = handler(async (req, ctx: { params: Promise<{ id: string }> }) => {
   enforceRateLimit(req, "circles:start", 20, 60);
   const { id } = await ctx.params;
-  if (!z.string().uuid().safeParse(id).success) throw new AppError("CIRCLE_NOT_FOUND", "Savings circle not found.", 404);
+  if (!z.string().uuid().safeParse(id).success) throw new AppError("CIRCLE_NOT_FOUND", "Thrift not found.", 404);
   const user = await requireUser();
   return json({ circle: await startCircle(user.id, id) });
 });

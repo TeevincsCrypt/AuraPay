@@ -16,7 +16,7 @@
  *   node scripts/mock-providers.mjs [port=4010]
  */
 import http from "node:http";
-import { decodeFunctionData, encodeFunctionResult, parseAbi } from "viem";
+import { decodeFunctionData, encodeEventTopics, encodeAbiParameters, encodeFunctionResult, keccak256, parseAbi, parseTransaction, recoverTransactionAddress } from "viem";
 
 const PORT = Number(process.argv[2] ?? process.env.MOCK_PORT ?? 4010);
 
@@ -89,7 +89,15 @@ const P = {
   PAIR: "0x4e494d0000000000000000000000000000000002",
   WPOL: "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270",
   POLPAIR: "0x604229c960e5cacf2aaeac8be68ac07ba9df81c3", // QuickSwap WPOL/USDT
+  VAULT: "0x5a7e5a7e00000000000000000000000000000001", // AuraPay Savings Vault (test deployment)
 };
+// Savings Vault state: lock id -> { owner, token, amount, unlockAt (s), released }
+const vaultLocks = new Map();
+const VAULT_ABI = parseAbi([
+  "function release(uint256 id)",
+  "event Released(uint256 indexed id, address indexed owner, address indexed token, uint256 amount, address caller)",
+]);
+let relayerNonce = 0;
 const defi = {
   bal: new Map(), // `${token}:${owner}` -> bigint
   allowance: new Map(), // `${token}:${owner}:${spender}` -> bigint
@@ -108,6 +116,8 @@ const DEFI_ABI = parseAbi([
   "function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
   "function token0() view returns (address)",
   "function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[] amounts)",
+  "function getLock(uint256 id) view returns ((address owner, address token, uint128 amount, uint64 unlockAt, bool released))",
+  "function lockCount() view returns (uint256)",
 ]);
 /** [reserveIn, reserveOut] of the mock pool for a token pair. */
 function mockReserves(tin, tout) {
@@ -126,6 +136,12 @@ function polygonCall(to, data) {
   if (fn === "allowance") return r(defi.allowance.get(`${to}:${a(args[0])}:${a(args[1])}`) ?? 0n);
   if (fn === "decimals") return r(to === P.NIM ? 5 : 6);
   if (fn === "getReserveData") return r({ configuration: 0n, liquidityIndex: 10n ** 27n, currentLiquidityRate: defi.liquidityRateRay, variableBorrowIndex: 10n ** 27n, currentVariableBorrowRate: 0n, currentStableBorrowRate: 0n, lastUpdateTimestamp: 0, id: 1, aTokenAddress: P.AUSDT, stableDebtTokenAddress: P.AUSDT, variableDebtTokenAddress: P.AUSDT, interestRateStrategyAddress: P.AUSDT, accruedToTreasury: 0n, unbacked: 0n, isolationModeTotalDebt: 0n });
+  if (fn === "getLock") {
+    const l = vaultLocks.get(String(args[0]));
+    if (!l) throw new Error("execution reverted: UnknownLock()");
+    return r({ owner: l.owner, token: l.token, amount: BigInt(l.amount), unlockAt: BigInt(l.unlockAt), released: Boolean(l.released) });
+  }
+  if (fn === "lockCount") return r(BigInt(vaultLocks.size));
   if (fn === "factory") return r(P.FACTORY);
   if (fn === "getPair") {
     const k = [a(args[0]), a(args[1])].sort().join();
@@ -339,6 +355,11 @@ const server = http.createServer(async (req, res) => {
   if (p === "/_test/evm-tx" && req.method === "POST") {
     evmTxs.set(body.hash.toLowerCase(), body);
     return send(res, 200, { ok: true });
+  }
+  if (p === "/_test/vault" && req.method === "POST") {
+    // { locks: [{ id, owner, token, amount (units), unlockAt (unix s), released }] }
+    for (const l of body.locks ?? []) vaultLocks.set(String(l.id), { ...vaultLocks.get(String(l.id)), ...l, owner: l.owner?.toLowerCase() ?? vaultLocks.get(String(l.id))?.owner, token: (l.token ?? P.USDT).toLowerCase() });
+    return send(res, 200, { ok: true, count: vaultLocks.size });
   }
   if (p === "/_test/defi" && req.method === "POST") {
     // { balances: [{token, owner, units}], allowances: [{token, owner, spender, units}], pol }
@@ -586,7 +607,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (body.method === "eth_getBlockByNumber") {
       const t = [...polyTxs.values()].find((x) => x.receipt.blockNumber === body.params?.[0]);
-      return ok({ number: body.params?.[0], timestamp: `0x${Math.floor((t?.timestamp ?? Date.now()) / 1000).toString(16)}` });
+      const number = body.params?.[0] === "latest" ? `0x${polygonHead.toString(16)}` : body.params?.[0];
+      return ok({ number, hash: `0x${"cd".repeat(32)}`, parentHash: `0x${"00".repeat(32)}`, timestamp: `0x${Math.floor((t?.timestamp ?? Date.now()) / 1000).toString(16)}`, baseFeePerGas: "0x6fc23ac00", gasLimit: "0x1c9c380", gasUsed: "0x0", transactions: [] });
     }
     if (body.method === "eth_call") {
       try {
@@ -596,6 +618,33 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (body.method === "eth_getBalance") return ok(`0x${defi.pol.toString(16)}`);
+    // Enough of a node for a server-side signer (the Savings relayer) to send a transaction.
+    if (body.method === "eth_getTransactionCount") return ok(`0x${relayerNonce.toString(16)}`);
+    if (body.method === "eth_estimateGas") return ok("0x186a0");
+    if (body.method === "eth_gasPrice" || body.method === "eth_maxPriorityFeePerGas") return ok("0x6fc23ac00");
+    if (body.method === "eth_sendRawTransaction") {
+      const raw = body.params[0];
+      const tx = parseTransaction(raw);
+      const from = (await recoverTransactionAddress({ serializedTransaction: raw })).toLowerCase();
+      const hash = keccak256(raw);
+      relayerNonce++;
+      let status = "0x0", logs = [];
+      if (String(tx.to).toLowerCase() === P.VAULT) {
+        const { functionName, args } = decodeFunctionData({ abi: VAULT_ABI, data: tx.data });
+        const l = functionName === "release" ? vaultLocks.get(String(args[0])) : null;
+        if (l && !l.released && Date.now() / 1000 >= Number(l.unlockAt)) {
+          l.released = true;
+          status = "0x1";
+          logs = [{
+            address: P.VAULT,
+            topics: encodeEventTopics({ abi: VAULT_ABI, eventName: "Released", args: { id: args[0], owner: l.owner, token: l.token } }),
+            data: encodeAbiParameters([{ type: "uint256" }, { type: "address" }], [BigInt(l.amount), from]),
+          }];
+        }
+      }
+      polyTxs.set(hash, { timestamp: Date.now(), receipt: { status, blockNumber: "0x3938701", from, to: String(tx.to).toLowerCase(), logs, transactionHash: hash, gasUsed: "0x5208", effectiveGasPrice: "0x6fc23ac00", cumulativeGasUsed: "0x5208", logsBloom: `0x${"0".repeat(512)}`, type: "0x2", transactionIndex: "0x0", blockHash: `0x${"ab".repeat(32)}`, contractAddress: null } });
+      return ok(hash);
+    }
     if (body.method === "eth_chainId") return ok("0x89");
     return send(res, 200, { jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "Method not found" } });
   }

@@ -9,7 +9,7 @@ import type { ActivityItem } from "@/lib/shared/types";
 
 type Cat = "all" | ActivityItem["category"];
 
-const CATS: Cat[] = ["all", "utility_purchase", "transfer_sent", "transfer_received", "earn_deposit", "earn_withdraw", "swap", "bill_schedule", "refund"];
+const CATS: Cat[] = ["all", "utility_purchase", "transfer_sent", "transfer_received", "earn_deposit", "earn_withdraw", "swap", "savings_lock", "savings_release", "bill_schedule", "refund"];
 
 function dayLabel(iso: string) {
   const d = new Date(iso);

@@ -202,7 +202,7 @@ function SendFlow() {
           </>
         ) : null}
         <div className="mt-5 grid grid-cols-2 gap-2">
-          <Button variant="secondary" onClick={() => router.push(circleId ? `/savings/${circleId}` : "/activity")}>
+          <Button variant="secondary" onClick={() => router.push(circleId ? `/thrift/${circleId}` : "/activity")}>
             View activity
           </Button>
           <Button onClick={reset}>Send again</Button>
@@ -272,8 +272,8 @@ function SendFlow() {
   return (
     <div className="space-y-5">
       {circleId ? (
-        <Notice tone="info" title={`Savings circle · round ${circleRound}`}>
-          Your contribution goes straight to @{clean(to)}. The amount and currency are set by the circle.
+        <Notice tone="info" title={`Thrift · round ${circleRound}`}>
+          Your contribution goes straight to @{clean(to)}. The amount and currency are set by the thrift.
         </Notice>
       ) : null}
       <Field

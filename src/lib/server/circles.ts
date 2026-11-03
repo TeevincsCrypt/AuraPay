@@ -7,7 +7,7 @@ import { log } from "./log";
 import { addInterval } from "./recurring";
 
 /**
- * Savings circles: rotating savings (ajo / esusu / chama / tontine).
+ * Thrift: rotating group savings (members contribute each round; one member takes the pot).
  *
  * N members each contribute the same amount every period; each round one member (in payout
  * order) receives everyone else's contributions. Contributions go **directly from each
@@ -153,7 +153,7 @@ async function loadForMember(db: Db, userId: string, id: string): Promise<Circle
       [id, userId],
     )
   )[0];
-  if (!c) throw new AppError("CIRCLE_NOT_FOUND", "Savings circle not found.", 404);
+  if (!c) throw new AppError("CIRCLE_NOT_FOUND", "Thrift not found.", 404);
   return c;
 }
 
@@ -167,7 +167,7 @@ export async function createCircle(
   const me = (await db.query<{ username: string | null }>("select username from users where id = $1", [userId]))[0];
   if (!me?.username) throw new AppError("USERNAME_REQUIRED", "Choose your @username first.", 422);
   const name = input.name.trim().slice(0, 40);
-  if (name.length < 2) throw new AppError("INVALID_NAME", "Give the circle a name.", 422);
+  if (name.length < 2) throw new AppError("INVALID_NAME", "Give the thrift a name.", 422);
   const start = new Date(input.startAt);
   if (Number.isNaN(start.getTime()) || start.getTime() < Date.now() - 86_400_000) throw new AppError("INVALID_START", "Choose today or a future start date.", 422);
   const atomic = input.currency === "NIM" ? BigInt(Math.round(input.amount * 1e5)) : BigInt(Math.round(input.amount * 1e6));
@@ -178,12 +178,12 @@ export async function createCircle(
   if (!names.includes(me.username)) names.unshift(me.username);
   if (new Set(names).size !== names.length) throw new AppError("DUPLICATE_MEMBER", "Each member can appear only once.", 422);
   if (names.length < 2) throw new AppError("TOO_FEW_MEMBERS", "Add at least one other member.", 422);
-  if (names.length > MAX_MEMBERS) throw new AppError("TOO_MANY_MEMBERS", `A circle can have up to ${MAX_MEMBERS} members.`, 422);
+  if (names.length > MAX_MEMBERS) throw new AppError("TOO_MANY_MEMBERS", `A thrift can have up to ${MAX_MEMBERS} members.`, 422);
   const users = await db.query<{ id: string; username: string }>("select id, username from users where username = any($1::text[])", [names]);
   const missing = names.filter((n) => !users.some((u) => u.username === n));
   if (missing.length) throw new AppError("USER_NOT_FOUND", `No AuraPay user called ${missing.map((m) => `@${m}`).join(", ")}.`, 404);
   if (input.currency === "USDT" && !(await verifiedEvmAddresses(userId)).length) {
-    throw new AppError("PAYER_NOT_VERIFIED", "Verify your USDT wallet before starting a USDT circle.", 422);
+    throw new AppError("PAYER_NOT_VERIFIED", "Verify your USDT wallet before starting a USDT thrift.", 422);
   }
 
   const ref = newRef("SV");
@@ -227,7 +227,7 @@ export async function respondToInvite(userId: string, id: string, accept: boolea
   const c = await loadForMember(db, userId, id);
   if (c.status !== "forming") throw new AppError("CIRCLE_STARTED", "This circle has already started.", 409);
   if (accept && c.currency === "USDT" && !(await verifiedEvmAddresses(userId)).length) {
-    throw new AppError("PAYER_NOT_VERIFIED", "Verify your USDT wallet first: you'll pay and receive USDT in this circle.", 422);
+    throw new AppError("PAYER_NOT_VERIFIED", "Verify your USDT wallet first: you'll pay and receive USDT in this thrift.", 422);
   }
   const rows = await db.query(
     "update circle_members set status = $3, joined_at = case when $3 = 'joined' then now() else null end where circle_id = $1 and user_id = $2 and status = 'invited' returning user_id",
@@ -240,7 +240,7 @@ export async function respondToInvite(userId: string, id: string, accept: boolea
 export async function startCircle(userId: string, id: string): Promise<CircleDTO> {
   const db = await getDb();
   const c = await loadForMember(db, userId, id);
-  if (c.organizer_id !== userId) throw new AppError("NOT_ORGANIZER", "Only the organizer can start the circle.", 403);
+  if (c.organizer_id !== userId) throw new AppError("NOT_ORGANIZER", "Only the organizer can start the thrift.", 403);
   if (c.status !== "forming") throw new AppError("CIRCLE_STARTED", "This circle has already started.", 409);
   const ms = await members(db, id);
   if (ms.some((m) => m.status === "invited")) throw new AppError("WAITING_FOR_MEMBERS", "Wait until everyone has accepted or declined.", 409);
@@ -261,8 +261,8 @@ export async function startCircle(userId: string, id: string): Promise<CircleDTO
 export async function cancelCircle(userId: string, id: string): Promise<CircleDTO> {
   const db = await getDb();
   const c = await loadForMember(db, userId, id);
-  if (c.organizer_id !== userId) throw new AppError("NOT_ORGANIZER", "Only the organizer can cancel the circle.", 403);
-  if (c.status !== "forming") throw new AppError("CIRCLE_STARTED", "A circle can only be cancelled before it starts.", 409);
+  if (c.organizer_id !== userId) throw new AppError("NOT_ORGANIZER", "Only the organizer can cancel the thrift.", 403);
+  if (c.status !== "forming") throw new AppError("CIRCLE_STARTED", "A thrift can only be cancelled before it starts.", 409);
   await db.query("update savings_circles set status = 'cancelled', updated_at = now() where id = $1", [id]);
   return buildDTO(db, { ...c, status: "cancelled" }, userId);
 }
@@ -283,7 +283,7 @@ export async function checkContribution(
   if (!recipient) throw new AppError("INVALID_ROUND", "That round doesn't exist.", 422);
   if (recipient.user_id !== input.toUserId) throw new AppError("WRONG_RECIPIENT", `Round ${input.round} goes to @${recipient.username}.`, 422);
   if (recipient.user_id === userId) throw new AppError("SELF_TRANSFER", "You receive this round; you don't pay into it.", 422);
-  if (!joined.some((m) => m.user_id === userId)) throw new AppError("NOT_MEMBER", "You're not a member of this circle.", 403);
+  if (!joined.some((m) => m.user_id === userId)) throw new AppError("NOT_MEMBER", "You're not a member of this thrift.", 403);
   if (input.currency !== c.currency || input.amountAtomic !== BigInt(c.contribution_atomic)) {
     throw new AppError("WRONG_AMOUNT", `The contribution is ${num(c.contribution)} ${c.currency}.`, 422);
   }

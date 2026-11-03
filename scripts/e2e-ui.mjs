@@ -19,7 +19,7 @@ import { mkdirSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { ed25519 } from "@noble/curves/ed25519";
 import { sha256 } from "@noble/hashes/sha256";
-import { decodeFunctionData, parseAbi } from "viem";
+import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, parseAbi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 const { chromium } = createRequire(import.meta.url)("playwright");
@@ -68,7 +68,7 @@ async function noOverflow(page) {
 // A tiny Polygon simulator for the fake wallet: every Aave / QuickSwap transaction the app sends
 // is decoded, its effect applied to the mock chain state, and a matching receipt registered, so
 // the server's receipt verification runs exactly as on mainnet.
-const DEFI = { USDT: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", AUSDT: "0x6ab707aca953edaefbc4fd23ba73294241490620", POOL: "0x794a61358d6845594f94dc1db02a252b5b4814ad", ROUTER: "0xa5e0829caced8ffdd4de3c43696c57f7d7a678ff", NIM: "0x4e494d0000000000000000000000000000000001", PAIR: "0x4e494d0000000000000000000000000000000002" };
+const DEFI = { VAULT: "0x5a7e5a7e00000000000000000000000000000001", USDT: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", AUSDT: "0x6ab707aca953edaefbc4fd23ba73294241490620", POOL: "0x794a61358d6845594f94dc1db02a252b5b4814ad", ROUTER: "0xa5e0829caced8ffdd4de3c43696c57f7d7a678ff", NIM: "0x4e494d0000000000000000000000000000000001", PAIR: "0x4e494d0000000000000000000000000000000002" };
 const TX_ABI = parseAbi([
   "function approve(address spender, uint256 amount) returns (bool)",
   "function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode)",
@@ -76,7 +76,15 @@ const TX_ABI = parseAbi([
   "function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) returns (uint256[] amounts)",
   "function swapExactTokensForETH(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) returns (uint256[] amounts)",
   "function swapExactETHForTokens(uint256 amountOutMin, address[] path, address to, uint256 deadline) payable returns (uint256[] amounts)",
+  "function lock(address token, uint256 amount, uint64 unlockAt) returns (uint256 id)",
+  "function release(uint256 id)",
 ]);
+const VAULT_EVENTS = parseAbi([
+  "event Locked(uint256 indexed id, address indexed owner, address indexed token, uint256 amount, uint64 unlockAt)",
+  "event Released(uint256 indexed id, address indexed owner, address indexed token, uint256 amount, address caller)",
+]);
+const vaultLocks = new Map();
+let nextLockId = 1;
 const chain = { usdt: 25_500_000n, ausdt: 0n, nim: 1_000_000_000n, pol: 2n * 10n ** 18n, reserves: { nim: 5_000_000_000_000n, usdt: 60_000_000_000n }, polReserves: { pol: 2_000_000n * 10n ** 18n, usdt: 400_000_000_000n } };
 const WPOL = "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270", POLPAIR = "0x604229c960e5cacf2aaeac8be68ac07ba9df81c3";
 const cp = (amountIn, rin, rout) => (amountIn * 997n * rout) / (rin * 1000n + amountIn * 997n);
@@ -87,7 +95,7 @@ const xfer = (token, from, to, units) => ({ address: token, topics: ["0xddf252ad
 const post = (path, body) => fetch(`${MOCK}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 async function simulatePolygonTx(tx, owner) {
   const to = String(tx.to).toLowerCase();
-  if (![DEFI.USDT, DEFI.NIM, DEFI.POOL, DEFI.ROUTER].includes(to)) return; // e.g. USDT bill payments are registered by the test itself
+  if (![DEFI.USDT, DEFI.NIM, DEFI.POOL, DEFI.ROUTER, DEFI.VAULT].includes(to)) return; // e.g. USDT bill payments are registered by the test itself
   const { functionName: fn, args } = decodeFunctionData({ abi: TX_ABI, data: tx.data });
   let logs = [];
   if (fn === "approve") await post("/_test/defi", { allowances: [{ token: to, owner, spender: String(args[0]), units: args[1].toString() }] });
@@ -97,6 +105,26 @@ async function simulatePolygonTx(tx, owner) {
   if (fn === "swapExactTokensForTokens") await spend(String(args[2][0]).toLowerCase(), DEFI.ROUTER, args[0]);
   if (fn === "supply") { chain.usdt -= args[1]; chain.ausdt += args[1]; logs = [xfer(DEFI.USDT, owner, DEFI.AUSDT, args[1])]; }
   if (fn === "withdraw") { const amt = args[1] > chain.ausdt ? chain.ausdt : args[1]; chain.ausdt -= amt; chain.usdt += amt; logs = [xfer(DEFI.USDT, DEFI.AUSDT, owner, amt)]; }
+  if (fn === "lock") {
+    const [token, amount, unlockAt] = args;
+    const id = nextLockId++;
+    vaultLocks.set(id, { owner, amount, unlockAt: Number(unlockAt) });
+    chain.usdt -= amount;
+    await post("/_test/vault", { locks: [{ id, owner, token: String(token), amount: amount.toString(), unlockAt: Number(unlockAt), released: false }] });
+    logs = [xfer(DEFI.USDT, owner, DEFI.VAULT, amount), { address: DEFI.VAULT, topics: encodeEventTopics({ abi: VAULT_EVENTS, eventName: "Locked", args: { id: BigInt(id), owner, token: String(token) } }), data: encodeAbiParameters([{ type: "uint256" }, { type: "uint64" }], [amount, unlockAt]) }];
+  }
+  if (fn === "release") {
+    const id = Number(args[0]);
+    const l = vaultLocks.get(id);
+    if (!l || l.released || Date.now() / 1000 < l.unlockAt) {
+      await post("/_test/polygon-tx", { hash: tx.hash, timestamp: Date.now(), receipt: { status: "0x0", blockNumber: "0x3938700", from: owner, to, logs: [] } });
+      return;
+    }
+    l.released = true;
+    chain.usdt += l.amount;
+    await post("/_test/vault", { locks: [{ id, released: true }] });
+    logs = [xfer(DEFI.USDT, DEFI.VAULT, l.owner, l.amount), { address: DEFI.VAULT, topics: encodeEventTopics({ abi: VAULT_EVENTS, eventName: "Released", args: { id: BigInt(id), owner: l.owner, token: DEFI.USDT } }), data: encodeAbiParameters([{ type: "uint256" }, { type: "address" }], [l.amount, owner]) }];
+  }
   if (fn === "swapExactTokensForETH") {
     const [amountIn] = args;
     const out = cp(amountIn, chain.polReserves.usdt, chain.polReserves.pol);
@@ -272,7 +300,8 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
     ["pay", "/pay", "Where are you sending to?"],
     ["schedules", "/schedules", "Reminders for recurring payments"],
     ["earn", "/earn", "Put idle USDT to work"],
-    ["savings", "/savings", "Save together in a circle"],
+    ["savings", "/savings", "Lock USDT until a date you choose"],
+    ["thrift", "/thrift", "Save together as a group"],
     ["activity", "/activity", "Every bill"],
     ["status", "/status", "Integrations"],
   ]) {
@@ -329,21 +358,21 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await page.locator("p.num", { hasText: "₦" }).first().waitFor({ timeout: 8000 });
       await page.screenshot({ path: `${OUT}/mobile-home-ngn.png`, fullPage: true });
     });
-    await step("start a savings circle with a friend", async () => {
+    await step("start a thrift with a friend", async () => {
       const friend2 = `pal_${randomBytes(3).toString("hex")}`;
       await apiUserWithName(friend2);
-      await page.goto(APP + "/savings/new", { waitUntil: "networkidle" });
-      await page.getByLabel("Name").fill("Family ajo");
+      await page.goto(APP + "/thrift/new", { waitUntil: "networkidle" });
+      await page.getByLabel("Name").fill("Family thrift");
       await page.getByLabel("Contribution per member, per period").fill("10");
       await page.getByLabel("Add member").fill(friend2);
       await page.getByRole("button", { name: "Add", exact: true }).click();
       await page.getByText(`@${friend2}`).waitFor();
-      await page.screenshot({ path: `${OUT}/savings-new.png`, fullPage: true });
+      await page.screenshot({ path: `${OUT}/thrift-new.png`, fullPage: true });
       await page.getByRole("button", { name: "Create & invite" }).click();
       await page.getByText("Members & payout order").waitFor({ timeout: 10_000 });
       await page.getByText("Invited").waitFor();
       await noOverflow(page);
-      await page.screenshot({ path: `${OUT}/savings-circle.png`, fullPage: true });
+      await page.screenshot({ path: `${OUT}/thrift-group.png`, fullPage: true });
     });
     await step("schedule a monthly airtime bill: prepay, verified, listed", async () => {
       await page.goto(APP + "/pay?service=airtime", { waitUntil: "networkidle" });
@@ -456,7 +485,7 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await page.getByRole("button", { name: "Max" }).click();
       await page.getByRole("button", { name: /Withdraw everything/ }).click();
       await page.getByText(/Withdrew 10\.00 USDT/).waitFor({ timeout: 30_000 });
-      await page.getByRole("button", { name: /Add to savings circle|Pay circle/ }).waitFor();
+      await page.getByRole("button", { name: /Add to thrift|Pay your thrift/ }).waitFor();
       await page.screenshot({ path: `${OUT}/earn-3-withdrawn.png`, fullPage: true });
       await page.getByRole("button", { name: /Pay a bill/ }).click();
       await page.getByRole("button", { name: /Nigeria/ }).click();
@@ -501,6 +530,50 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await page.getByText(/Minimum received/).waitFor({ timeout: 10_000 });
       await page.getByRole("button", { name: /Swap USDT → NIM/ }).click();
       await page.getByText(/Swapped 5(\.0+)? USDT →/).waitFor({ timeout: 30_000 });
+    });
+    await step("savings: lock USDT until a date (approve + lock), verified, counting down", async () => {
+      await page.goto(APP + "/savings", { waitUntil: "networkidle" });
+      const cfg = await (await page.request.get(APP + "/api/savings")).json();
+      if (!cfg.savings.enabled) {
+        await page.getByText("Locked savings is coming").waitFor();
+        await page.getByText("Thrift", { exact: true }).waitFor();
+        await page.screenshot({ path: `${OUT}/savings-off.png`, fullPage: true });
+        return;
+      }
+      await page.getByLabel("Amount to lock").fill("3");
+      await page.getByRole("button", { name: "1 week" }).click();
+      await page.getByLabel("Goal (optional)").fill("School fees");
+      const lockBtn = page.getByRole("button", { name: /Lock 3\.00 USDT/ });
+      if (!(await lockBtn.isDisabled())) throw new Error("must confirm the lock period first");
+      await page.getByText(/I understand this USDT can't be withdrawn before/).click();
+      await page.screenshot({ path: `${OUT}/savings-1-form.png`, fullPage: true });
+      const before = sentTxs.length;
+      await lockBtn.click();
+      await page.getByText("Locked 3.00 USDT").waitFor({ timeout: 30_000 });
+      const evm = sentTxs.slice(before).filter((t) => t.kind === "evm").map((t) => t.data.slice(0, 10));
+      if (evm.at(-1) !== "0xd94e0fd4" && !evm.length) throw new Error("no lock tx");
+      await page.getByText(/Unlocks in 6d 23h|Unlocks in 7d/).waitFor();
+      await page.getByText("School fees").waitFor();
+      await page.screenshot({ path: `${OUT}/savings-2-locked.png`, fullPage: true });
+    });
+    await step("savings: withdraw a matured lock to the wallet", async () => {
+      const cfg = await (await page.request.get(APP + "/api/savings")).json();
+      if (!cfg.savings.enabled) return;
+      // A lock whose time has come (made on-chain by this wallet; the simulator accepts a past unlock time).
+      const owner = evmAccount.address.toLowerCase();
+      const id = nextLockId++;
+      const unlockAt = Math.floor(Date.now() / 1000) - 60;
+      vaultLocks.set(id, { owner, amount: 2_000_000n, unlockAt });
+      await post("/_test/vault", { locks: [{ id, owner, token: DEFI.USDT, amount: "2000000", unlockAt, released: false }] });
+      const hash = `0x${randomBytes(32).toString("hex")}`;
+      await post("/_test/polygon-tx", { hash, timestamp: Date.now(), receipt: { status: "0x1", blockNumber: "0x3938700", from: owner, to: DEFI.VAULT, logs: [xfer(DEFI.USDT, owner, DEFI.VAULT, 2_000_000n), { address: DEFI.VAULT, topics: encodeEventTopics({ abi: VAULT_EVENTS, eventName: "Locked", args: { id: BigInt(id), owner, token: DEFI.USDT } }), data: encodeAbiParameters([{ type: "uint256" }, { type: "uint64" }], [2_000_000n, BigInt(unlockAt)]) }] } });
+      const r = await page.request.post(APP + "/api/savings/locks", { data: { txHash: hash, from: owner, label: "Matured" } });
+      if (r.status() !== 201) throw new Error(`record lock ${r.status()}`);
+      await page.reload({ waitUntil: "networkidle" });
+      await page.getByText("Unlocked: ready to withdraw").waitFor();
+      await page.getByRole("button", { name: /Withdraw to wallet/ }).click();
+      await page.getByText(/^Unlocked · /).waitFor({ timeout: 30_000 });
+      await page.screenshot({ path: `${OUT}/savings-3-withdrawn.png`, fullPage: true });
     });
     await step("send NIM to another @username: review, slide, verified on-chain", async () => {
       const friend = await apiUserWithName(FRIEND_NAME);

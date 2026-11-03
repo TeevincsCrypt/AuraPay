@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeftRight, CheckCircle2, ExternalLink, PiggyBank, Receipt, Users, Wallet } from "lucide-react";
 import { encodeFunctionData } from "viem";
-import { contributionUrl, type Circle } from "@/components/savings";
+import { contributionUrl, type Circle } from "@/components/thrift";
 import { Button, Card, cx, Field, Input, KV, Notice, PageHeader, Segmented, Skeleton, Spinner } from "@/components/ui";
 import { api } from "@/lib/client/api";
 import { useMoney } from "@/lib/client/money";
@@ -242,9 +242,9 @@ export default function EarnPage() {
                       <Receipt className="size-4" /> Pay a bill
                     </Button>
                   </Link>
-                  <Link href={dueCircle ? contributionUrl(dueCircle, dueCircle.myAction!.round!, dueCircle.myAction!.to!) : "/savings"}>
+                  <Link href={dueCircle ? contributionUrl(dueCircle, dueCircle.myAction!.round!, dueCircle.myAction!.to!) : "/thrift"}>
                     <Button variant="secondary" className="w-full">
-                      <Users className="size-4" /> {dueCircle ? "Pay circle" : "Add to savings circle"}
+                      <Users className="size-4" /> {dueCircle ? "Pay your thrift" : "Add to thrift"}
                     </Button>
                   </Link>
                 </div>

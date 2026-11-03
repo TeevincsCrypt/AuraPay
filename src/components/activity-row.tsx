@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, CalendarClock, PiggyBank, Landmark, LineChart, RotateCcw, Smartphone, Wallet, ShieldPlus, ShieldMinus } from "lucide-react";
+import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, CalendarClock, PiggyBank, Landmark, LineChart, RotateCcw, Smartphone, Wallet, ShieldPlus, ShieldMinus, Lock, LockOpen } from "lucide-react";
 import type { ActivityItem } from "@/lib/shared/types";
 import { fmtCrypto, fmtNum, fmtRelative, fmtUsd } from "@/lib/shared/format";
 import { cx } from "./ui";
@@ -21,6 +21,8 @@ const ICON = {
   earn_deposit: PiggyBank,
   earn_withdraw: PiggyBank,
   swap: ArrowLeftRight,
+  savings_lock: Lock,
+  savings_release: LockOpen,
 } as const;
 
 export const CATEGORY_LABEL: Record<ActivityItem["category"], string> = {
@@ -38,6 +40,8 @@ export const CATEGORY_LABEL: Record<ActivityItem["category"], string> = {
   earn_deposit: "Earn deposit",
   earn_withdraw: "Earn withdrawal",
   swap: "Swap",
+  savings_lock: "Savings lock",
+  savings_release: "Savings unlocked",
 };
 
 const STATUS_TEXT: Record<ActivityItem["status"], string> = {
@@ -55,7 +59,7 @@ export function amountText(i: ActivityItem): string {
   return `${fmtNum(i.amount, 4)} ${i.currency}`;
 }
 
-const INCOMING = new Set<ActivityItem["category"]>(["loan_disbursement", "refund", "collateral_withdrawal", "transfer_received", "earn_withdraw"]);
+const INCOMING = new Set<ActivityItem["category"]>(["loan_disbursement", "refund", "collateral_withdrawal", "transfer_received", "earn_withdraw", "savings_release"]);
 
 export function ActivityRow({ item }: { item: ActivityItem }) {
   const Icon = ICON[item.category] ?? ArrowDownLeft;

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowDown, ArrowUp, AtSign, Plus, X } from "lucide-react";
-import type { Circle } from "@/components/savings";
+import type { Circle } from "@/components/thrift";
 import { Button, Card, Field, Input, Notice, PageHeader, Segmented } from "@/components/ui";
 import { api } from "@/lib/client/api";
 import { useMoney } from "@/lib/client/money";
@@ -56,7 +56,7 @@ export default function NewCirclePage() {
         method: "POST",
         json: { name, currency, amount: amt, frequency, startAt: new Date(`${start}T09:00:00`).toISOString(), members: order },
       });
-      router.push(`/savings/${r.circle.id}`);
+      router.push(`/thrift/${r.circle.id}`);
     } catch (e) {
       setErr((e as Error).message);
       setBusy(false);
@@ -66,7 +66,7 @@ export default function NewCirclePage() {
   if (!me) {
     return (
       <div className="mx-auto max-w-[560px]">
-        <PageHeader title="New circle" />
+        <PageHeader title="New thrift" />
         <Notice tone="info">Choose your @username first (on Home or Receive). Members find each other by username.</Notice>
       </div>
     );
@@ -74,9 +74,9 @@ export default function NewCirclePage() {
 
   return (
     <div className="mx-auto max-w-[560px] space-y-5">
-      <PageHeader title="New savings circle" subtitle="Everyone contributes each period; one member takes the pot each round, in the order you set." />
+      <PageHeader title="New thrift" subtitle="Everyone contributes each period; one member takes the pot each round, in the order you set." />
       <Field label="Name" htmlFor="name">
-        <Input id="name" placeholder="e.g. Family ajo" maxLength={40} value={name} onChange={(e) => setName(e.target.value)} />
+        <Input id="name" placeholder="e.g. Family thrift" maxLength={40} value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
       <Field label="Currency">
         <Segmented<"NIM" | "USDT">

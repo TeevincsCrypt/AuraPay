@@ -101,6 +101,21 @@ USDT exists only on Polygon *mainnet*, so it is disabled while the utility provi
 
 Leave empty until NIM exists on Polygon. When Nimiq's bridge is live, set it to the NIM token contract on Polygon; the Swap screen turns on by itself as soon as a QuickSwap NIM/USDT pool with liquidity exists. Earn needs no configuration (it uses `POLYGON_RPC_URL`).
 
+### `SAVINGS_VAULT_ADDRESS` and `SAVINGS_RELAYER_PRIVATE_KEY`: time-locked Savings
+
+Savings is off until the **AuraPay Savings Vault** contract is deployed once and its address is set.
+
+1. Deploy (one time, ~0.05 POL of gas). From a computer with Node:
+   ```bash
+   cd contracts && npm install && npm test
+   DEPLOYER_PRIVATE_KEY=0x… npm run deploy:polygon   # any wallet with a little POL; it gets no rights over the contract
+   ```
+   Or paste `contracts/src/AuraPaySavingsVault.sol` into Remix, compile with **0.8.24**, optimizer **200**, EVM **paris**, and deploy on Polygon with MetaMask.
+2. Optional but recommended: verify the source on Polygonscan so users can read it.
+3. Set `SAVINGS_VAULT_ADDRESS=<the 0x… address>` in Vercel.
+4. For automatic release at the unlock time, create a **new, empty wallet** used only for this, send it ~1 POL, and set `SAVINGS_RELAYER_PRIVATE_KEY` to its key. It only pays gas: the contract always pays a lock to its owner, so this key can never take anyone's savings. Without it, users tap **Withdraw to wallet** after the date. Releases run with the scheduled-bills cron (`CRON_SECRET`), so set that up too.
+5. Redeploy.
+
 ### `CRON_SECRET`: scheduled bills
 
 Scheduled bills are paid by a runner endpoint, `/api/cron/schedules`, which pays every bill that's due. Something has to call it regularly, and it only accepts calls that send this secret.

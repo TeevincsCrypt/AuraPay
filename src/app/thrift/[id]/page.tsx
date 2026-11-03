@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { use, useState } from "react";
 import { ArrowLeft, CheckCircle2, Clock, Crown, Users } from "lucide-react";
-import { contributionUrl, type Circle } from "@/components/savings";
+import { contributionUrl, type Circle } from "@/components/thrift";
 import { Badge, Button, Card, cx, ErrorState, KV, Notice, PageHeader, Skeleton } from "@/components/ui";
 import { api } from "@/lib/client/api";
 import { useApi } from "@/lib/client/hooks";
@@ -36,7 +36,7 @@ export default function CirclePage({ params }: { params: Promise<{ id: string }>
 
   return (
     <div className="mx-auto max-w-[560px] space-y-4">
-      <Link href="/savings" className="inline-flex items-center gap-1.5 text-[13px] text-fg-3 hover:text-fg-2">
+      <Link href="/thrift" className="inline-flex items-center gap-1.5 text-[13px] text-fg-3 hover:text-fg-2">
         <ArrowLeft className="size-4" /> Savings
       </Link>
       {!c ? (
@@ -99,7 +99,7 @@ export default function CirclePage({ params }: { params: Promise<{ id: string }>
                 </Button>
               </div>
             ) : c.myAction?.type === "wait" ? (
-              <Notice tone="info" className="mt-4">Waiting for @{c.organizer} to start the circle.</Notice>
+              <Notice tone="info" className="mt-4">Waiting for @{c.organizer} to start the thrift.</Notice>
             ) : null}
             {err ? <Notice tone="error" className="mt-3">{err}</Notice> : null}
           </Card>

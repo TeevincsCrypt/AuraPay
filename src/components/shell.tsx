@@ -24,6 +24,7 @@ const NAV = [
 const PUBLIC_PATHS = ["/auth/approve", "/status"];
 
 function isActive(path: string, href: string) {
+  if (href === "/savings" && (path === "/thrift" || path.startsWith("/thrift/"))) return true; // Thrift lives under Savings
   return href === "/" ? path === "/" : path === href || path.startsWith(`${href}/`);
 }
 

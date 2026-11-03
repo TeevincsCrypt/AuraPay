@@ -21,6 +21,8 @@ AuraPay switches to live fulfilment automatically when `FLUTTERWAVE_SECRET_KEY` 
 | `POLYGON_MERCHANT_ADDRESS` | your `0x…` address that receives USDT |
 | `ADMIN_API_TOKEN` | a long random value (for refunds) |
 | `CRON_SECRET` | a long random value; set up the 5-minute runner call (see ENV_SETUP) |
+| `SAVINGS_VAULT_ADDRESS` | your deployed Savings Vault (see ENV_SETUP); Savings is off without it |
+| `SAVINGS_RELAYER_PRIVATE_KEY` | optional: a gas-only wallet's key for automatic release at unlock time |
 | `NIM_POLYGON_TOKEN` | optional: NIM's Polygon contract, once bridged (enables Swap) |
 | `ALLOW_REAL_PAYMENTS_FOR_SANDBOX` | **delete it** |
 | `AURAPAY_TEST_MODE` | **delete it** if present |

@@ -168,7 +168,9 @@ export type ActivityCategory =
   | "transfer_received"
   | "earn_deposit"
   | "earn_withdraw"
-  | "swap";
+  | "swap"
+  | "savings_lock"
+  | "savings_release";
 
 export interface ActivityItem {
   id: string;

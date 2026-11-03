@@ -210,7 +210,7 @@ export async function createTransfer(userId: string, input: CreateTransferInput)
     fromAddress = from;
   }
   if (input.circleId) {
-    if (!input.round) throw new AppError("INVALID_ROUND", "Missing circle round.", 422);
+    if (!input.round) throw new AppError("INVALID_ROUND", "Missing thrift round.", 422);
     await checkContribution(db, userId, { circleId: input.circleId, round: input.round, toUserId: recipient.id, currency: input.currency, amountAtomic: atomic });
   }
   const amount = input.currency === "NIM" ? Number(atomic) / 1e5 : Number(atomic) / 1e6;

@@ -97,7 +97,7 @@ created ─(unused for 30 min)─▶ expired
 
 A self-custodial wallet can't be charged automatically, so `recurring_items` are created from a real completed bill order or transfer (`POST /api/recurring {orderId|transferId, frequency, firstDueAt}`) and become **due** on schedule (Home "Due soon", Scheduled → Reminders). "Pay now" opens the prefilled flow (`/pay?recurring=<id>`, `/send?…&recurring=<id>`). An item advances only when a matching **verified** payment exists after its creation (same service + recipient, or a confirmed transfer to the same @username), whether paid from the reminder or normally. `GET /api/recurring/<id>/ics` returns an iCalendar event with the repeat rule and an alert. Bills that should pay themselves use prepaid Autopay (§2b).
 
-## 3d. Savings circles (rotating savings)
+## 3d. Thrift (rotating group savings)
 
 `savings_circles` + `circle_members` (payout `position`). The organizer invites @usernames; members accept/decline (USDT circles require a verified wallet); the organizer starts it once everyone has replied. Round *k* goes to member *k* and is due at start + (k−1) periods. A contribution is an ordinary transfer intent with `circleId` + `round`: it must come from a member other than the round's recipient, go to that recipient, and be exactly the contribution amount and currency, once per member per round (`ALREADY_CONTRIBUTED`). Progress is derived from confirmed transfers; the circle completes when every round is fully paid. Members pay each other directly, so AuraPay never holds the pot (it can't force a member to pay; members should trust each other).
 
@@ -114,9 +114,21 @@ Both run from the user's own wallet through injected `window.ethereum` (Nimiq Pa
 
 * **Position** (`GET /api/earn/position?address=`): wallet USDT, aPolUSDT (= supplied + interest), POL, Pool allowance and the APY from `getReserveData(USDT).currentLiquidityRate` (RAY, compounded per second). Not hardcoded.
 * **Deposit**: `approve(Pool, exact amount)` (reset to 0 first if a smaller allowance exists, as USDT requires), then `supply(USDT, amount, user, 0)`. **Withdraw**: `withdraw(USDT, amount | MAX_UINT256, user)`. No borrowing anywhere.
-* **Swap**: enabled only if `NIM_POLYGON_TOKEN` is set **and** `router.factory().getPair(NIM, USDT)` exists with ≥ 1 USDT of liquidity (`GET /api/swap/config`). Quotes use `getAmountsOut`; the swap is `swapExactTokensForTokens(amountIn, minOut (−0.5%), [in, out], user, now+10 min)` after an exact router approval.
-* **Verification**: every tx is recorded (`POST /api/defi/actions {kind, txHash, from, …}` → `defi_actions` + an Activity row) and confirmed only from its Polygon **receipt**: status success, sent by the user's verified wallet to the Pool/Router, and a USDT `Transfer` user → aPolUSDT (supply), aPolUSDT → user (withdraw; actual amount incl. "max"), or tokenIn from / tokenOut to the user (swap). A hash can be recorded once (`TX_ALREADY_USED`). Unconfirmed after 30 min → failed.
-* **Hand-off**: after a withdrawal or a swap into USDT, "Pay a bill" opens `/pay?payWith=USDT&from=earn|swap` (USDT preselected) and "Add to savings circle" opens your due USDT circle contribution.
+* **Swap** (`GET /api/swap/config` → `pairs.POL`, `pairs.NIM`): each pair is on when `router.factory().getPair(token, USDT)` exists with ≥ 1 USDT of liquidity. **POL** uses WPOL (`0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270`): USDT → POL is `swapExactTokensForETH` after an exact USDT approval; POL → USDT is payable `swapExactETHForTokens` (the app keeps 0.05 POL for gas). **NIM** additionally needs `NIM_POLYGON_TOKEN`, and uses `swapExactTokensForTokens`. Quotes use `getAmountsOut`; minOut is −0.5%, deadline now + 10 min.
+* **Verification**: every tx is recorded (`POST /api/defi/actions {kind, txHash, from, …}` → `defi_actions` + an Activity row) and confirmed only from its Polygon **receipt**: status success, sent by the user's verified wallet to the Pool/Router, and a USDT `Transfer` user → aPolUSDT (supply), aPolUSDT → user (withdraw; actual amount incl. "max"), or tokenIn from / tokenOut to the user (token swaps). Native POL never appears as a Transfer, so POL legs are checked from the calldata (recipient = the user, path, `value`) plus the router's WPOL `Withdrawal` (USDT → POL, amount out) or `Deposit` (POL → USDT, = tx value). A hash can be recorded once (`TX_ALREADY_USED`). Unconfirmed after 30 min → failed.
+* **Hand-off**: after a withdrawal or a swap into USDT, "Pay a bill" opens `/pay?payWith=USDT&from=earn|swap` (USDT preselected) and "Add to thrift" opens your due USDT thrift contribution.
+
+## 3f. Savings: time-locked USDT (AuraPay Savings Vault)
+
+[`contracts/src/AuraPaySavingsVault.sol`](../contracts/src/AuraPaySavingsVault.sol): `lock(token, amount, unlockAt)` pulls the tokens and records a lock for `msg.sender` (amount = what actually arrived; unlock between now and 10 years). `release(id)` works only once `block.timestamp >= unlockAt`, only once, and always transfers to the lock's owner, whoever calls it. No owner, admin, fee or upgrade path; re-entrancy guarded. Tests: `cd contracts && npm i && npm test` (Hardhat, solc 0.8.24).
+
+* **Lock** (app): exact USDT approval to the vault → `lock(USDT, units, unlockAt)` from the user's wallet → `POST /api/savings/locks {txHash, from, label}`. Confirmed only from the receipt: success, sent by the user's verified wallet to the vault, with the vault's `Locked` event for that owner and USDT; amount, on-chain id and unlock time come from the event.
+* **Release**: the cron runner (`/api/cron/schedules`) finds matured locks and, if `SAVINGS_RELAYER_PRIVATE_KEY` is set, sends `release(id)` from that gas-only key (it can't receive anything). Owners can also tap **Withdraw to wallet** (`POST /api/savings/locks/<id>/release {txHash}`, verified from the `Released` event). Releases by anyone else are picked up from `getLock(id).released`.
+* Locks don't earn interest (Earn does). NIM can't be locked: Nimiq Pay mini apps can't create Nimiq's native time-locked contracts.
+
+## 3g. Profile pictures
+
+The browser center-crops and re-encodes the photo at 320 px (WebP, else JPEG) and `PUT /api/me/avatar {image: dataURL}`. The server accepts only JPEG/PNG/WebP identified by their magic bytes (never SVG), ≤ 256 KB, stores it in `user_avatars`, and serves `GET /api/avatars/<userId>?v=<n>` (immutable, `nosniff`, `default-src 'none'; sandbox`). `avatarUrl` is on the session and on `GET /api/users/<username>`.
 
 ## 4. Data model
 

@@ -9,7 +9,7 @@ import { randomUUID, randomBytes } from "node:crypto";
 import { ed25519 } from "@noble/curves/ed25519";
 import { sha256 } from "@noble/hashes/sha256";
 import { privateKeyToAccount } from "viem/accounts";
-import { encodeEventTopics, encodeFunctionData, parseAbi } from "viem";
+import { encodeAbiParameters, encodeEventTopics, encodeFunctionData, parseAbi } from "viem";
 
 const APP = process.env.APP ?? "http://localhost:3000";
 const MOCK = process.env.MOCK ?? "http://localhost:4010";
@@ -643,7 +643,7 @@ await test("set, serve and remove a profile picture; others see it on your @user
   eq((await new Client().req("PUT", "/api/me/avatar", { image: `data:image/png;base64,${PNG_1PX}` })).status, 401, "sign-in required");
 });
 
-console.log("\nSavings circles (rotating, wallet to wallet)");
+console.log("\nThrift (rotating group savings, wallet to wallet)");
 let circle;
 const contribute = async (client, toName, round, amount = 2) => {
   const r = await client.post("/api/transfers", { toUsername: toName, currency: "NIM", amount, circleId: circle.id, round });
@@ -653,7 +653,7 @@ const contribute = async (client, toName, round, amount = 2) => {
 };
 await test("organizer creates a circle; members are invited by username", async () => {
   eq((await alice.post("/api/circles", { name: "Fam", currency: "NIM", amount: 2, frequency: "monthly", startAt: new Date().toISOString(), members: ["nobody_xyz_1"] })).json.error?.code, "USER_NOT_FOUND", "unknown member");
-  const r = await alice.post("/api/circles", { name: "Family ajo", currency: "NIM", amount: 2, frequency: "monthly", startAt: new Date().toISOString(), members: [bobName] });
+  const r = await alice.post("/api/circles", { name: "Family thrift", currency: "NIM", amount: 2, frequency: "monthly", startAt: new Date().toISOString(), members: [bobName] });
   eq(r.status, 201, "created");
   circle = r.json.circle;
   eq(circle.members.map((m) => m.username).join(","), `${aliceName},${bobName}`, "payout order: organizer first");
@@ -817,6 +817,107 @@ await test("quotes come from the router; a swap is verified from its receipt", a
   eq(a.amountOut, Number(BigInt(q.amountOut)) / 1e5, "NIM out (5 decimals)");
   const item = (await alice.get("/api/activity?limit=50")).json.items.find((i) => i.category === "swap");
   eq(item?.title, "Swapped USDT → NIM", "activity");
+});
+
+console.log("\nSavings: time-locked USDT (AuraPay Savings Vault on Polygon)");
+const VAULT = "0x5a7e5a7e00000000000000000000000000000001";
+const SAVINGS_ON = PROVIDER === "flutterwave"; // the Flutterwave test env has SAVINGS_VAULT_ADDRESS + a relayer key
+const VAULT_EVENTS = parseAbi([
+  "event Locked(uint256 indexed id, address indexed owner, address indexed token, uint256 amount, uint64 unlockAt)",
+  "event Released(uint256 indexed id, address indexed owner, address indexed token, uint256 amount, address caller)",
+]);
+const lockedLog = (id, owner, token, units, unlockAt) => ({
+  address: VAULT,
+  topics: encodeEventTopics({ abi: VAULT_EVENTS, eventName: "Locked", args: { id: BigInt(id), owner, token } }),
+  data: encodeAbiParameters([{ type: "uint256" }, { type: "uint64" }], [BigInt(units), BigInt(unlockAt)]),
+});
+const releasedLog = (id, owner, units, caller) => ({
+  address: VAULT,
+  topics: encodeEventTopics({ abi: VAULT_EVENTS, eventName: "Released", args: { id: BigInt(id), owner, token: USDT_P } }),
+  data: encodeAbiParameters([{ type: "uint256" }, { type: "address" }], [BigInt(units), caller]),
+});
+const lockId = () => 1000 + Math.floor(Math.random() * 1e6);
+/** Simulates lock(): vault state + a receipt with the USDT transfer and the Locked event. */
+async function chainLock({ id = lockId(), owner = PAYER_POLY, token = USDT_P, units = 5_000_000, unlockAt, to = VAULT }) {
+  await mock("/_test/vault", { locks: [{ id, owner, token, amount: String(units), unlockAt, released: false }] });
+  const hash = await polyReceipt({ to, logs: [transferLog(token, owner, VAULT, units), lockedLog(id, owner, token, units, unlockAt)] });
+  return { id, hash };
+}
+await test("savings is offered only once the vault contract is configured", async () => {
+  const r = (await alice.get("/api/savings")).json;
+  eq(r.savings.enabled, SAVINGS_ON, "enabled");
+  if (!SAVINGS_ON) {
+    assert(/Savings Vault/.test(r.savings.reason), "explains why");
+    eq((await alice.post("/api/savings/locks", { txHash: polyHash(), from: PAYER_POLY })).json.error?.code, "SAVINGS_UNAVAILABLE", "no locks");
+    return;
+  }
+  eq(r.savings.vaultAddress, VAULT, "vault");
+  eq(r.savings.autoRelease, true, "relayer configured");
+});
+let autoLock;
+await test("a lock is confirmed only from the vault's Locked event for your wallet's USDT", async () => {
+  if (!SAVINGS_ON) return;
+  const unlockAt = Math.floor(Date.now() / 1000) + 4;
+  const { id, hash } = await chainLock({ unlockAt });
+  const l = (await alice.post("/api/savings/locks", { txHash: hash, from: PAYER_POLY, label: "Rent" })).json.lock;
+  eq(l.status, "locked", "locked");
+  eq(l.amount, 5, "amount from the event");
+  eq(l.lockId, String(id), "on-chain id");
+  eq(new Date(l.unlockAt).getTime(), unlockAt * 1000, "unlock time from the event");
+  eq(l.unlocked, false, "not yet unlocked");
+  eq(l.label, "Rent", "goal");
+  autoLock = l;
+  const act = (await alice.get("/api/activity?limit=50")).json.items.find((i) => i.category === "savings_lock" && i.status === "successful");
+  eq(act?.title, "Locked in Savings", "activity");
+  // Wrong token, wrong contract, someone else's lock, reverted: never shown as locked.
+  const t = Math.floor(Date.now() / 1000) + 3600;
+  eq((await alice.post("/api/savings/locks", { txHash: (await chainLock({ token: NIM_P, unlockAt: t })).hash, from: PAYER_POLY })).json.lock.status, "failed", "not USDT");
+  eq((await alice.post("/api/savings/locks", { txHash: (await chainLock({ unlockAt: t, to: ROUTER })).hash, from: PAYER_POLY })).json.lock.status, "failed", "not the vault");
+  eq((await alice.post("/api/savings/locks", { txHash: (await chainLock({ owner: "0x3333333333333333333333333333333333333333", unlockAt: t })).hash, from: PAYER_POLY })).json.lock.status, "failed", "other owner");
+  eq((await alice.post("/api/savings/locks", { txHash: await polyReceipt({ to: VAULT, logs: [], status: "0x0" }), from: PAYER_POLY })).json.lock.status, "failed", "reverted");
+  eq((await bob.post("/api/savings/locks", { txHash: hash, from: PAYER_POLY })).json.error?.code, "PAYER_NOT_VERIFIED", "not bob's wallet");
+  eq((await alice.post("/api/savings/locks", { txHash: hash, from: PAYER_POLY })).json.lock.id, l.id, "same tx → same lock");
+});
+await test("releasing early is impossible; a release must be this lock's Released event", async () => {
+  if (!SAVINGS_ON) return;
+  const early = await polyReceipt({ to: VAULT, logs: [], status: "0x0" }); // StillLocked revert
+  eq((await alice.post(`/api/savings/locks/${autoLock.id}/release`, { txHash: early })).json.error?.code, "RELEASE_FAILED", "reverted release");
+  const wrong = await polyReceipt({ to: VAULT, logs: [releasedLog(Number(autoLock.lockId) + 1, PAYER_POLY, 5_000_000, PAYER_POLY)] });
+  eq((await alice.post(`/api/savings/locks/${autoLock.id}/release`, { txHash: wrong })).json.error?.code, "RELEASE_FAILED", "different lock's event");
+  eq((await bob.post(`/api/savings/locks/${autoLock.id}/release`, { txHash: wrong })).status, 404, "private to the owner");
+  eq((await alice.get(`/api/savings/locks/${autoLock.id}`)).json.lock.status, "locked", "still locked");
+});
+await test("at the unlock time the runner releases it to the owner (relayer pays only gas)", async () => {
+  if (!SAVINGS_ON) return;
+  const wait = new Date(autoLock.unlockAt).getTime() - Date.now() + 500;
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  const r = await cron();
+  eq(r.status, 200, "runner ok");
+  assert(r.json.savings.released >= 1, `released ${JSON.stringify(r.json.savings)}`);
+  const l = (await alice.get(`/api/savings/locks/${autoLock.id}`)).json.lock;
+  eq(l.status, "released", "released");
+  eq(l.releasedBy, "auto", "by the runner");
+  assert(/^0x[0-9a-f]{64}$/.test(l.releaseTxHash), "release tx recorded");
+  const item = (await alice.get("/api/activity?limit=50")).json.items.find((i) => i.category === "savings_release");
+  eq(item?.title, "Savings unlocked", "activity");
+  eq(item?.amount, 5, "amount back");
+  eq((await cron()).json.savings.released, 0, "never twice");
+});
+await test("owner withdraws a matured lock themselves; on-chain releases by anyone are picked up", async () => {
+  if (!SAVINGS_ON) return;
+  const past = Math.floor(Date.now() / 1000) - 5; // already matured (the contract only accepts future times; the mock doesn't care)
+  const a = await chainLock({ unlockAt: past, units: 2_500_000 });
+  const la = (await alice.post("/api/savings/locks", { txHash: a.hash, from: PAYER_POLY })).json.lock;
+  eq(la.unlocked, true, "unlocked");
+  const rel = await polyReceipt({ to: VAULT, logs: [transferLog(USDT_P, VAULT, PAYER_POLY, 2_500_000), releasedLog(a.id, PAYER_POLY, 2_500_000, PAYER_POLY)] });
+  const done = (await alice.post(`/api/savings/locks/${la.id}/release`, { txHash: rel })).json.lock;
+  eq(done.status, "released", "released");
+  eq(done.releasedBy, "owner", "by the owner");
+  const b = await chainLock({ unlockAt: past, units: 1_000_000 });
+  const lb = (await alice.post("/api/savings/locks", { txHash: b.hash, from: PAYER_POLY })).json.lock;
+  await mock("/_test/vault", { locks: [{ id: b.id, released: true }] });
+  const listed = (await alice.get("/api/savings")).json.locks.find((x) => x.id === lb.id);
+  eq(listed.status, "released", "seen from getLock()");
 });
 
 await test("invest and borrow APIs are gone", async () => {

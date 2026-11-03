@@ -129,6 +129,12 @@ export const config = {
    * NIM ↔ USDT swap is enabled only when this is set *and* a QuickSwap pair exists on-chain.
    */
   nimPolygonToken: env("NIM_POLYGON_TOKEN"),
+  savings: {
+    /** Deployed AuraPaySavingsVault on Polygon (contracts/). Savings is off until this is set. */
+    vaultAddress: env("SAVINGS_VAULT_ADDRESS"),
+    /** Optional gas-only key that calls release() for matured locks; it can never receive funds. */
+    relayerKey: env("SAVINGS_RELAYER_PRIVATE_KEY"),
+  },
 
   pricing: {
     serviceFeeBps: int("AURAPAY_SERVICE_FEE_BPS", 0),

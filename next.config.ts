@@ -31,9 +31,17 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        source: "/api/:path*",
+        // Profile pictures are immutable per ?v= URL and set their own caching.
+        source: "/api/:path((?!avatars/).*)",
         headers: [{ key: "Cache-Control", value: "no-store" }],
       },
+    ];
+  },
+  // Savings circles became Thrift (/thrift); /savings is now time-locked savings.
+  async redirects() {
+    return [
+      { source: "/savings/new", destination: "/thrift/new", permanent: false },
+      { source: "/savings/:id([0-9a-fA-F-]{36})", destination: "/thrift/:id", permanent: false },
     ];
   },
 };
