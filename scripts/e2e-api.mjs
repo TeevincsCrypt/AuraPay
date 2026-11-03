@@ -248,6 +248,12 @@ await test("phone validation + operator auto-detect", async () => {
   }
   eq((await c.get("/api/utilities/detect?country=NG&phone=12345")).json.valid, false, "invalid");
 });
+await test("NIM balance can be read from AuraPay's own node", async () => {
+  const r = await c.get("/api/wallet/nim-balance?address=" + encodeURIComponent("NQ07 0000 0000 0000 0000 0000 0000 0000 0000"));
+  eq(r.status, 200, "status");
+  eq(r.json.luna, 250_000_000, "luna");
+  eq((await c.get("/api/wallet/nim-balance?address=nope")).status, 422, "invalid address");
+});
 await test("wallet balance includes POL for gas", async () => {
   const r = await c.get("/api/wallet/usdt-balance?address=0x3333333333333333333333333333333333333333");
   eq(r.status, 200, "status");

@@ -117,6 +117,15 @@ export async function verifyNimiqTransfer(opts: {
   };
 }
 
+/** Balance of a Nimiq address in Luna, read from our own node (independent of the wallet host). */
+export async function nimBalanceOf(address: string): Promise<number> {
+  const r = await rpc<{ data?: { balance?: number } } & { balance?: number }>("getAccountByAddress", [address]);
+  if (r.error) throw new Error(r.error.message);
+  const luna = r.result?.data?.balance ?? r.result?.balance;
+  if (typeof luna !== "number" || !Number.isFinite(luna)) throw new Error("No balance in RPC response");
+  return luna;
+}
+
 export async function nimiqRpcReachable(): Promise<boolean> {
   try {
     const r = await rpc<number>("getBlockNumber", []);

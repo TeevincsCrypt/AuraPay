@@ -551,6 +551,9 @@ const server = http.createServer(async (req, res) => {
   // ---- Nimiq RPC
   if (p === "/nimiq" && req.method === "POST") {
     if (body.method === "getBlockNumber") return send(res, 200, { jsonrpc: "2.0", id: body.id, result: { data: 1000, metadata: null } });
+    if (body.method === "getAccountByAddress") {
+      return send(res, 200, { jsonrpc: "2.0", id: body.id, result: { data: { address: body.params?.[0], balance: 250_000_000, type: "basic" }, metadata: { blockNumber: 1000 } } });
+    }
     if (body.method === "getTransactionByHash") {
       const tx = nimTxs.get(body.params?.[0]);
       if (!tx) return send(res, 200, { jsonrpc: "2.0", id: body.id, error: { code: -32603, message: "Transaction not found" } });

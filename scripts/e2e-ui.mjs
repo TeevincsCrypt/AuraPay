@@ -118,7 +118,8 @@ async function nimiqPayContext(opts, { nimKey, evmAccount, sentTxs }) {
       window.nimiqPay = { language: "en", userFiat: "USD", network: "testnet" };
       window.nimiq = {
         listAccounts: async () => ["NQ52 BBBB BBBB BBBB BBBB BBBB BBBB BBBB BBBB"],
-        getBalance: async () => 250_000_000,
+        // Like some Nimiq Pay builds: getBalance resolves with an error, so AuraPay must fall back to its own node.
+        getBalance: async () => ({ error: { type: "NETWORK_ERROR", message: "Balance unavailable" } }),
         isConsensusEstablished: async () => true,
         getBlockNumber: async () => 1000,
         sign: async (message) => window.__nimSign(message),

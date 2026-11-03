@@ -133,17 +133,23 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const loadNimBalance = useCallback(async (address: string) => {
     const nimiq = providerRef.current;
     if (!nimiq) return;
-    if (typeof nimiq.getBalance !== "function") {
-      setState((s) => ({ ...s, nimiq: { ...s.nimiq, balanceLuna: null, balanceError: "Update Nimiq Pay to show your balance." } }));
-      return;
+    const set = (luna: number | null, err: string | null) => setState((s) => ({ ...s, nimiq: { ...s.nimiq, balanceLuna: luna, balanceError: err } }));
+    // 1) Ask Nimiq Pay. The host may resolve with an error object instead of throwing, or time out
+    //    while it syncs, so it gets a few seconds at most.
+    if (typeof nimiq.getBalance === "function") {
+      try {
+        const luna: unknown = await Promise.race([nimiq.getBalance(address), new Promise((r) => setTimeout(() => r(null), 6_000))]);
+        if (typeof luna === "number" && Number.isFinite(luna)) return set(luna, null);
+      } catch {}
     }
+    // 2) Fall back to AuraPay's own Nimiq node, but only if it's on the same network as the wallet.
     try {
-      // The host may resolve with an error object instead of throwing.
-      const luna: unknown = await nimiq.getBalance(address);
-      if (typeof luna !== "number" || !Number.isFinite(luna)) throw new Error((luna as { error?: { message?: string } })?.error?.message ?? "No balance");
-      setState((s) => ({ ...s, nimiq: { ...s.nimiq, balanceLuna: luna, balanceError: null } }));
+      const r = await api<{ luna: number; network: string }>(`/api/wallet/nim-balance?address=${encodeURIComponent(address)}`);
+      const hostNet = window.nimiqPay?.network ?? null;
+      if (!hostNet || hostNet === r.network) return set(r.luna, null);
+      set(null, `Nimiq Pay is on ${hostNet}; AuraPay is on ${r.network}.`);
     } catch {
-      setState((s) => ({ ...s, nimiq: { ...s.nimiq, balanceLuna: null, balanceError: "Balance unavailable right now." } }));
+      set(null, "Balance unavailable right now.");
     }
   }, []);
 
