@@ -60,7 +60,7 @@ const eq = (a, b, msg) => assert(a === b, `${msg}: expected ${JSON.stringify(b)}
 // The suite runs against whichever utility provider the server is configured with.
 const PROVIDER = (await (await fetch(APP + "/api/status")).json()).utilities.provider;
 const CODES = PROVIDER === "flutterwave"
-  ? { airtime: "BIL099:AT099", data: "BIL108", dataProduct: "MD138", electricity: "BIL113:UB157" }
+  ? { airtime: "BIL099:AT099:MTN", data: "BIL108", dataProduct: "MD138", electricity: "BIL113:UB157" }
   : { airtime: "341", data: "645", dataProduct: "1.34", electricity: "9" };
 console.log(`Utility provider: ${PROVIDER}`);
 
@@ -237,11 +237,21 @@ await test("phone validation + operator auto-detect", async () => {
   eq(ok.json.operator?.name ?? null, PROVIDER === "reloadly" ? "MTN Nigeria" : "MTN", "detected");
   if (PROVIDER === "flutterwave") {
     eq((await c.get("/api/utilities/detect?country=NG&phone=09044544951")).json.operator?.name, "Airtel", "0904 → Airtel");
+    // MTN has no biller of its own when the generic item spans networks: it's still listed, paid through BIL099/AT099.
+    const air = (await c.get("/api/utilities/operators?country=NG&service=airtime")).json.operators;
+    eq(air.map((o) => o.name).sort().join(","), "Airtel,All networks,Glo,MTN", "airtime operators incl. MTN");
+    eq(air.find((o) => o.name === "MTN").code, "BIL099:AT099:MTN", "MTN routed via the generic item");
+    eq(ok.json.operator?.code, "BIL099:AT099:MTN", "detected MTN is payable");
     const data = (await c.get("/api/utilities/operators?country=NG&service=data")).json.operators;
     eq(data.map((o) => o.name).sort().join(","), "Airtel Data,MTN Data", "data operators named by network");
     eq(data.find((o) => o.name === "MTN Data").products.length, 2, "bundles grouped under their network");
   }
   eq((await c.get("/api/utilities/detect?country=NG&phone=12345")).json.valid, false, "invalid");
+});
+await test("wallet balance includes POL for gas", async () => {
+  const r = await c.get("/api/wallet/usdt-balance?address=0x3333333333333333333333333333333333333333");
+  eq(r.status, 200, "status");
+  assert(typeof r.json.balance === "number" && typeof r.json.pol === "number", "usdt + pol");
 });
 
 // ---------------------------------------------------------------------------
@@ -250,10 +260,11 @@ let firstOrder;
 await test("quote is priced server-side and bound to a memo", async () => {
   firstOrder = await createOrder(c);
   eq(firstOrder.quote.providerCostUsd, 0.67, "provider cost");
-  eq(firstOrder.quote.totalUsd, 0.77, "total");
+  eq(firstOrder.quote.serviceFeeUsd, 0, "AuraPay is free");
+  eq(firstOrder.quote.totalUsd, 0.67, "total = provider price");
   eq(firstOrder.memo, `AuraPay ${firstOrder.ref}`, "memo");
   eq(firstOrder.payToAddress, MERCHANT_NIM.replace(/\s/g, ""), "merchant");
-  eq(firstOrder.quote.payAmountAtomic, String(Math.ceil(((0.77 * 1.01) / 0.0012) * 1e5)), "luna");
+  eq(firstOrder.quote.payAmountAtomic, String(Math.ceil(((0.67 * 1.01) / 0.0012) * 1e5)), "luna");
 });
 await test("verified payment → exactly one sandbox top-up", async () => {
   const before = await mock("/_test/counters");
@@ -326,7 +337,7 @@ await test("USDT payer must be a signature-verified wallet", async () => {
 await test("exact USDT transfer from the verified wallet is fulfilled", async () => {
   const o = await createOrder(c, { payCurrency: "USDT", payerAddress: PAYER_POLY });
   const units = BigInt(o.quote.payAmountAtomic);
-  assert(units > 770_000n && units < 770_100n, `tagged amount ${units}`);
+  assert(units > 670_000n && units < 670_100n, `tagged amount ${units}`);
   eq((await c.post(`/api/orders/${o.id}/payment`, { txHash: await registerPolyTx(o) })).json.order.status, "successful", "status");
 });
 await test("USDT amount mismatch → review", async () => {
@@ -392,8 +403,8 @@ await test("schedule is priced for every run and paid once", async () => {
   sched = await newSchedule();
   eq(sched.status, "quoted", "status");
   eq(sched.totalRuns, 3, "runs");
-  eq(sched.perRunUsd, 0.77, "per run");
-  eq(sched.quote.totalUsd, 2.31, "total = 3 × per run");
+  eq(sched.perRunUsd, 0.67, "per run");
+  eq(sched.quote.totalUsd, 2.01, "total = 3 × per run");
   eq(sched.memo, `AuraPay ${sched.ref}`, "memo");
 });
 await test("verified payment activates it; a 'now' start runs the first payment immediately", async () => {

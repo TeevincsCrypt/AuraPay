@@ -377,6 +377,29 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await noOverflow(page);
       await page.screenshot({ path: `${OUT}/mobile-cable.png`, fullPage: true });
     });
+    await step("USDT bill with no POL: free, explained up front, slider locked", async () => {
+      await post("/_test/defi", { pol: "0" });
+      try {
+        await page.goto(APP + "/pay?service=airtime", { waitUntil: "networkidle" });
+        await page.getByRole("button", { name: /Nigeria/ }).click();
+        await page.getByLabel("Recipient phone number").fill("08031234567");
+        await page.getByText(/✓ .*MTN/).waitFor({ timeout: 8000 });
+        for (const k of ["1", "0", "0"]) await page.getByRole("button", { name: `Key ${k}` }).click();
+        await page.getByRole("radio", { name: /Pay with USDT/ }).click();
+        await page.getByText(/needs POL for gas/).waitFor();
+        await page.getByRole("button", { name: "Review payment" }).click();
+        await page.getByText("You're paying").waitFor();
+        await page.getByText("Add a little POL for the network fee").waitFor();
+        await page.getByText("Free", { exact: true }).first().waitFor();
+        if (!(await page.getByRole("button", { name: /Slide to pay/ }).isDisabled())) throw new Error("slider should be disabled without POL");
+        await page.screenshot({ path: `${OUT}/no-gas.png`, fullPage: true });
+      } catch (e) {
+        await page.screenshot({ path: `${OUT}/no-gas-fail.png`, fullPage: true });
+        throw e;
+      } finally {
+        await post("/_test/defi", { pol: (2n * 10n ** 18n).toString() });
+      }
+    });
     await step("earn: approve + deposit USDT to Aave, verified on Polygon", async () => {
       await page.goto(APP + "/earn", { waitUntil: "networkidle" });
       await page.getByText("Supplied on Aave").waitFor();

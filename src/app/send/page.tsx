@@ -11,7 +11,7 @@ import { api, ApiError } from "@/lib/client/api";
 import { useApi, useStatus } from "@/lib/client/hooks";
 import { useMoney } from "@/lib/client/money";
 import { useSession } from "@/lib/client/session";
-import { useWallet, WalletActionError } from "@/lib/client/wallet";
+import { MIN_POL_FOR_GAS, NO_GAS_MESSAGE, useWallet, WalletActionError } from "@/lib/client/wallet";
 import { fmtCrypto, fmtUsd, shortAddress } from "@/lib/shared/format";
 import type { PayCurrency, TransferDTO, UsernameProfile } from "@/lib/shared/types";
 
@@ -67,6 +67,7 @@ function SendFlow() {
   const usdtBlocked = currency === "USDT" && recipient && !recipient.polygonAddress;
   const testnet = currency === "NIM" && status?.nimiq.network === "testnet";
   const networkMismatch = currency === "NIM" && w.hostNetwork && status && w.hostNetwork !== status.nimiq.network;
+  const sendNoGas = transfer?.currency === "USDT" && w.evm.polBalance !== null && w.evm.polBalance < MIN_POL_FOR_GAS;
   const canReview = Boolean(recipient && !self && amount > 0 && !usdtBlocked && !overBalance);
 
   // Prepares the transfer: the server fixes the recipient address, exact amount and memo.
@@ -250,12 +251,17 @@ function SendFlow() {
           {transfer.currency === "USDT" ? " Your wallet charges a small Polygon network fee." : ""}
         </p>
         {networkMismatch ? <Notice tone="warn">Nimiq Pay is on {w.hostNetwork}; switch it to {status!.nimiq.network} to send.</Notice> : null}
+        {sendNoGas ? (
+          <Notice tone="warn" title="Add a little POL for the network fee">
+            {NO_GAS_MESSAGE}
+          </Notice>
+        ) : null}
         {error ? (
           <Notice tone={error.unknown ? "warn" : "error"} title={error.unknown ? "Status unknown" : undefined}>
             {error.msg}
           </Notice>
         ) : null}
-        <SlideToConfirm label={busy ? "Waiting for your wallet…" : `Slide to send ${fmtCrypto(transfer.amount, transfer.currency)}`} loading={busy} disabled={Boolean(error?.unknown) || Boolean(networkMismatch)} onConfirm={() => void send()} />
+        <SlideToConfirm label={busy ? "Waiting for your wallet…" : `Slide to send ${fmtCrypto(transfer.amount, transfer.currency)}`} loading={busy} disabled={Boolean(error?.unknown) || Boolean(networkMismatch) || sendNoGas} onConfirm={() => void send()} />
         <Button variant="ghost" className="w-full" onClick={() => setStep("form")}>
           Back
         </Button>

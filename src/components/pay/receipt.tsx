@@ -97,7 +97,7 @@ export function OrderReceipt({ order }: { order: UtilityOrderDTO }) {
       <Divider />
       <div>
         <KV k="Provider cost" v={fmtUsd(order.quote.providerCostUsd)} />
-        <KV k="AuraPay fee" v={fmtUsd(order.quote.serviceFeeUsd)} />
+        <KV k="AuraPay fee" v={order.quote.serviceFeeUsd > 0 ? fmtUsd(order.quote.serviceFeeUsd) : "Free"} />
         <KV k="Total" v={fmtUsd(order.quote.totalUsd)} strong />
         <KV
           k="Paid with"

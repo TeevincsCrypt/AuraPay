@@ -63,7 +63,7 @@ FLUTTERWAVE_SECRET_KEY=FLWSECK_TEST-xxxxxxxxxxxxxxxxxxxx-X
 
 AuraPay detects test vs live from the key: a `FLWSECK_TEST-` key runs in test mode (orders labelled TEST, nothing delivered). Only the secret key is needed; it is used server-side only. The public and encryption keys are not used.
 
-Prices: Flutterwave charges bills in local currency. AuraPay converts the exact amount (plus any biller fee) to USD with Flutterwave's own rate (`/v3/transfers/rates`), then adds the AuraPay fee.
+Prices: Flutterwave charges bills in local currency. AuraPay converts the exact amount (plus any biller fee) to USD with Flutterwave's own rate (`/v3/transfers/rates`) (AuraPay adds no fee by default).
 
 *Alternative:* AuraPay still supports Reloadly (`RELOADLY_CLIENT_ID`, `RELOADLY_CLIENT_SECRET`, `RELOADLY_MODE`). If both are set, Flutterwave is used unless `UTILITY_PROVIDER=reloadly`.
 
@@ -156,7 +156,7 @@ COINGECKO_PRO=false
 | Variable | What it does | Where to get it |
 |---|---|---|
 | `POLYGON_RPC_URL` | Your own Polygon RPC instead of the rate-limited public one (verifies USDT payments and transfers) | Alchemy, Infura, QuickNode, etc. (free tiers) |
-| `AURAPAY_SERVICE_FEE_BPS`, `AURAPAY_MIN_SERVICE_FEE_USD` | Bill payment fee (default 1.5%, min $0.10). Transfers are free. | — |
+| `AURAPAY_SERVICE_FEE_BPS`, `AURAPAY_MIN_SERVICE_FEE_USD` | Optional bill fee. Default **0: AuraPay is free**; leave unset. | — |
 
 ---
 

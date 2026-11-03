@@ -24,8 +24,8 @@ AuraPay switches to live fulfilment automatically when `FLUTTERWAVE_SECRET_KEY` 
 | `NIM_POLYGON_TOKEN` | optional: NIM's Polygon contract, once bridged (enables Swap) |
 | `ALLOW_REAL_PAYMENTS_FOR_SANDBOX` | **delete it** |
 | `AURAPAY_TEST_MODE` | **delete it** if present |
-| `AURAPAY_SERVICE_FEE_BPS` | optional, default `150` (1.5%) |
-| `AURAPAY_MIN_SERVICE_FEE_USD` | optional, default `0.10` |
+| `AURAPAY_SERVICE_FEE_BPS` | **leave unset** (AuraPay is free; default `0`) |
+| `AURAPAY_MIN_SERVICE_FEE_USD` | **leave unset** (default `0`) |
 
 Then **Redeploy**.
 

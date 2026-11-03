@@ -131,8 +131,8 @@ export const config = {
   nimPolygonToken: env("NIM_POLYGON_TOKEN"),
 
   pricing: {
-    serviceFeeBps: int("AURAPAY_SERVICE_FEE_BPS", 150),
-    minServiceFeeUsd: Number(env("AURAPAY_MIN_SERVICE_FEE_USD") ?? "0.10"),
+    serviceFeeBps: int("AURAPAY_SERVICE_FEE_BPS", 0),
+    minServiceFeeUsd: Number(env("AURAPAY_MIN_SERVICE_FEE_USD") ?? "0"),
     quoteTtlSeconds: int("QUOTE_TTL_SECONDS", 600),
     nimSlippageBps: int("NIM_SLIPPAGE_BPS", 100),
   },

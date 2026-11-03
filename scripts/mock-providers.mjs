@@ -142,6 +142,9 @@ const FLW_ITEMS = {
   NG: {
     airtime: [
       { id: 1, biller_code: "BIL099", name: "MTN NIGERIA", default_commission: 0.03, country: "NG", is_airtime: true, biller_name: "AIRTIME", item_code: "AT099", short_name: "MTN NIGERIA", fee: 0, label_name: "Mobile Number", amount: 0 },
+      // Live Flutterwave also lists other networks under the generic BIL099/AT099 item, so it reads
+      // as "All networks" and MTN has no biller of its own.
+      { id: 3, biller_code: "BIL099", name: "AIRTEL NIGERIA", default_commission: 0.03, country: "NG", is_airtime: true, biller_name: "AIRTIME", item_code: "AT099", short_name: "AIRTEL NIGERIA", fee: 0, label_name: "Mobile Number", amount: 0 },
       { id: 2, biller_code: "BIL102", name: "GLO NIGERIA", default_commission: 0.03, country: "NG", is_airtime: true, biller_name: "AIRTIME", item_code: "AT102", short_name: "GLO NIGERIA", fee: 0, label_name: "Mobile Number", amount: 0 },
     ],
     data_bundle: [

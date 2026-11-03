@@ -50,9 +50,16 @@ export interface WalletState {
     status: "idle" | "connecting" | "connected" | "error";
     address: string | null;
     usdtBalance: number | null;
+    /** POL for Polygon gas; null when unknown. */
+    polBalance: number | null;
     error: string | null;
   };
 }
+
+/** Below this a USDT transfer (~65k gas, normally ~0.002 POL) can't reliably pay its network fee. */
+export const MIN_POL_FOR_GAS = 0.003;
+export const NO_GAS_MESSAGE =
+  "Your Polygon wallet has no POL for the network fee. Nimiq Pay's own USDT sends are gas-free, but USDT payments from apps need a little POL (0.1 POL covers dozens of payments). Send some POL to this wallet, or pay with NIM.";
 
 export class WalletActionError extends Error {
   constructor(
@@ -107,9 +114,10 @@ function evmErrorToAction(err: unknown): WalletActionError {
   const e = err as { code?: number; message?: string };
   if (e?.code === 4001) return new WalletActionError("rejected", "You cancelled the request in your wallet.");
   if (e?.code === 4200 || e?.code === 4902) return new WalletActionError("unsupported", "Polygon isn't available in this wallet.");
-  if (/insufficient funds|gas/i.test(e?.message ?? "")) {
-    return new WalletActionError("insufficient", "Not enough POL to pay the Polygon network fee, or not enough USDT.");
-  }
+  const msg = e?.message ?? "";
+  // "insufficient funds for gas * price + value" is the node's wording for a native (POL) shortfall.
+  if (/insufficient funds|not enough (pol|matic|native)|gas required exceeds/i.test(msg)) return new WalletActionError("insufficient", NO_GAS_MESSAGE);
+  if (/exceeds balance|insufficient balance/i.test(msg)) return new WalletActionError("insufficient", "Not enough USDT in your Polygon wallet for this payment.");
   return new WalletActionError("failed", e?.message || "The wallet couldn't complete the request.");
 }
 
@@ -119,7 +127,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     host: "detecting",
     hostNetwork: null,
     nimiq: { status: "idle", addresses: [], balanceLuna: null, balanceError: null, error: null },
-    evm: { available: false, status: "idle", address: null, usdtBalance: null, error: null },
+    evm: { available: false, status: "idle", address: null, usdtBalance: null, polBalance: null, error: null },
   });
 
   const loadNimBalance = useCallback(async (address: string) => {
@@ -141,10 +149,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const loadUsdtBalance = useCallback(async (address: string) => {
     try {
-      const r = await api<{ balance: number }>(`/api/wallet/usdt-balance?address=${address}`);
-      setState((s) => ({ ...s, evm: { ...s.evm, usdtBalance: r.balance } }));
+      const r = await api<{ balance: number; pol?: number | null }>(`/api/wallet/usdt-balance?address=${address}`);
+      setState((s) => ({ ...s, evm: { ...s.evm, usdtBalance: r.balance, polBalance: r.pol ?? null } }));
     } catch {
-      setState((s) => ({ ...s, evm: { ...s.evm, usdtBalance: null } }));
+      setState((s) => ({ ...s, evm: { ...s.evm, usdtBalance: null, polBalance: null } }));
     }
   }, []);
 
@@ -211,6 +219,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           remembered = localStorage.getItem(LS_KEY) === "1";
         } catch {}
         if (remembered) void connectNimiq().catch(() => {});
+        // An EVM account the user already shared with AuraPay (no prompt): load USDT + POL up front so
+        // Pay can warn about a missing gas balance before a payment is started.
+        try {
+          const accts = window.ethereum ? ((await window.ethereum.request({ method: "eth_accounts" })) as string[]) : [];
+          const addr = accts?.[0]?.toLowerCase();
+          if (addr && !cancelled) {
+            setState((s) => (s.evm.address ? s : { ...s, evm: { ...s.evm, status: "connected", address: addr } }));
+            void loadUsdtBalance(addr);
+          }
+        } catch {}
       } catch {
         if (cancelled) return;
         setState((s) => ({ ...s, host: "browser", evm: { ...s.evm, available: Boolean(window.ethereum) } }));
@@ -219,7 +237,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [connectNimiq]);
+  }, [connectNimiq, loadUsdtBalance]);
 
   const refreshBalances = useCallback(async () => {
     const tasks: Promise<void>[] = [];
@@ -236,7 +254,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     setState((s) => ({
       ...s,
       nimiq: { status: "idle", addresses: [], balanceLuna: null, balanceError: null, error: null },
-      evm: { ...s.evm, status: "idle", address: null, usdtBalance: null, error: null },
+      evm: { ...s.evm, status: "idle", address: null, usdtBalance: null, polBalance: null, error: null },
     }));
   }, []);
 
@@ -263,6 +281,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const chainId = (await eth.request({ method: "eth_chainId" })) as string;
       if (chainId?.toLowerCase() !== POLYGON_CHAIN_ID) {
         await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: POLYGON_CHAIN_ID }] });
+      }
+      // Check gas and balance first, so the wallet never shows a transaction that can't go through.
+      const bal = await api<{ balance: number; pol?: number | null }>(`/api/wallet/usdt-balance?address=${from}`).catch(() => null);
+      if (bal) {
+        setState((s) => ({ ...s, evm: { ...s.evm, usdtBalance: bal.balance, polBalance: bal.pol ?? null } }));
+        if (bal.balance * 1e6 < Number(units)) throw new WalletActionError("insufficient", "Not enough USDT in your Polygon wallet for this payment.");
+        if (bal.pol !== null && bal.pol !== undefined && bal.pol < MIN_POL_FOR_GAS) throw new WalletActionError("insufficient", NO_GAS_MESSAGE);
       }
       const data = encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [to as `0x${string}`, BigInt(units)] });
       const hash = (await eth.request({

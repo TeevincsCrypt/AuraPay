@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { CalendarClock, CheckCircle2 } from "lucide-react";
 import { api, ApiError } from "@/lib/client/api";
 import { useStatus } from "@/lib/client/hooks";
-import { useWallet, WalletActionError } from "@/lib/client/wallet";
+import { MIN_POL_FOR_GAS, NO_GAS_MESSAGE, useWallet, WalletActionError } from "@/lib/client/wallet";
 import { countryByCode } from "@/lib/shared/countries";
 import { fmtCrypto, fmtMoney, fmtUsd } from "@/lib/shared/format";
 import type { BillScheduleDTO, ScheduleFrequency, ScheduleStatus } from "@/lib/shared/types";
@@ -111,6 +111,7 @@ export function ScheduleReview({ schedule, onPaid, onExpired }: { schedule: Bill
   const networkMismatch = q.payCurrency === "NIM" && w.hostNetwork && status && w.hostNetwork !== status.nimiq.network;
   const balance = q.payCurrency === "NIM" ? (w.nimiq.balanceLuna !== null ? w.nimiq.balanceLuna / 1e5 : null) : w.evm.usdtBalance;
   const insufficient = balance !== null && balance < q.payAmount;
+  const noGas = q.payCurrency === "USDT" && w.evm.polBalance !== null && w.evm.polBalance < MIN_POL_FOR_GAS;
 
   const confirm = useCallback(async () => {
     setBusy(true);
@@ -156,7 +157,7 @@ export function ScheduleReview({ schedule, onPaid, onExpired }: { schedule: Bill
           <KV k="Provider" v={schedule.operatorName} />
           {schedule.productDescription ? <KV k="Product" v={schedule.productDescription} /> : null}
           {schedule.amountLocal !== null && schedule.localCurrency ? <KV k="Each payment" v={fmtMoney(schedule.amountLocal, schedule.localCurrency)} /> : null}
-          <KV k="Per payment" v={`${fmtUsd(schedule.perRunUsd)} incl. ${fmtUsd(q.serviceFeeUsd)} fee`} />
+          <KV k="Per payment" v={q.serviceFeeUsd > 0 ? `${fmtUsd(schedule.perRunUsd)} incl. ${fmtUsd(q.serviceFeeUsd)} fee` : `${fmtUsd(schedule.perRunUsd)} (no AuraPay fee)`} />
           <KV k="Total" v={fmtUsd(q.totalUsd)} strong />
         </div>
       </Card>
@@ -174,6 +175,11 @@ export function ScheduleReview({ schedule, onPaid, onExpired }: { schedule: Bill
           {error.msg}
         </Notice>
       ) : null}
+      {noGas && !insufficient && !closed && left > 0 ? (
+        <Notice tone="warn" title="Add a little POL for the network fee">
+          {NO_GAS_MESSAGE}
+        </Notice>
+      ) : null}
       {insufficient && !closed && left > 0 ? (
         <Notice tone="warn" title={`Not enough ${q.payCurrency}`}>
           You have {fmtCrypto(balance, q.payCurrency)} but prepaying costs {fmtCrypto(q.payAmount, q.payCurrency)}. Top up, choose fewer payments, or pay with the other currency.
@@ -188,7 +194,7 @@ export function ScheduleReview({ schedule, onPaid, onExpired }: { schedule: Bill
           <SlideToConfirm
             label={busy ? "Waiting for your wallet…" : `Slide to prepay ${fmtCrypto(q.payAmount, q.payCurrency)}`}
             loading={busy}
-            disabled={Boolean(error?.unknown) || Boolean(networkMismatch) || insufficient}
+            disabled={Boolean(error?.unknown) || Boolean(networkMismatch) || insufficient || noGas}
             onConfirm={() => void confirm()}
           />
           <p className="num text-center text-xs text-fg-3">

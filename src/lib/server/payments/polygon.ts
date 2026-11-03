@@ -117,6 +117,12 @@ export async function verifyPolygonUsdtTransfer(opts: {
 }
 
 /** Reads a USDT (Polygon) balance server-side so the wallet need not switch chains just to display it. */
+/** Native POL balance (pays Polygon gas). */
+export async function polBalanceOf(address: string): Promise<number> {
+  const result = await rpc<string>("eth_getBalance", [address.toLowerCase(), "latest"]);
+  return result ? Number(BigInt(result)) / 1e18 : 0;
+}
+
 export async function usdtBalanceOf(address: string): Promise<number> {
   const data = `0x70a08231${address.toLowerCase().replace(/^0x/, "").padStart(64, "0")}`;
   const result = await rpc<string>("eth_call", [{ to: config.polygon.usdtContract, data }, "latest"]);

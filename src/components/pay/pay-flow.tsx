@@ -7,7 +7,7 @@ import { api, ApiError, newRequestId } from "@/lib/client/api";
 import { useApi, useStatus } from "@/lib/client/hooks";
 import { useMoney } from "@/lib/client/money";
 import { useSession } from "@/lib/client/session";
-import { useWallet, WalletActionError } from "@/lib/client/wallet";
+import { MIN_POL_FOR_GAS, NO_GAS_MESSAGE, useWallet, WalletActionError } from "@/lib/client/wallet";
 import { countryByCode, TARGET_COUNTRIES, type TargetCountry } from "@/lib/shared/countries";
 import { fmtCrypto, fmtMoney, fmtNum, fmtUsd } from "@/lib/shared/format";
 import type { BillerDTO, BillScheduleDTO, CountryServices, OperatorDTO, PayCurrency, UtilityOrderDTO, UtilityService } from "@/lib/shared/types";
@@ -499,7 +499,10 @@ function PayCurrencyPicker({ value, onChange }: { value: PayCurrency | null; onC
     {
       c: "USDT",
       title: "Pay with USDT",
-      sub: w.evm.usdtBalance !== null ? `Balance ${fmtCrypto(w.evm.usdtBalance, "USDT")}` : "Polygon",
+      sub:
+        w.evm.usdtBalance !== null
+          ? `Balance ${fmtCrypto(w.evm.usdtBalance, "USDT")}${w.evm.polBalance !== null && w.evm.polBalance < MIN_POL_FOR_GAS ? " · needs POL for gas" : ""}`
+          : "Polygon",
       disabled: !rails?.USDT.available,
       reason: rails?.USDT.reason,
     },
@@ -557,6 +560,13 @@ function DetailsStep({
   const [productCode, setProductCode] = useState<string | null>(prefill?.productCode ?? null);
   const [amountText, setAmountText] = useState(prefill?.amount && !prefill.productCode ? String(prefill.amount) : "");
   // Hand-off from Earn / Swap: /pay?payWith=USDT&from=earn preselects USDT.
+  // Fresh balances (incl. POL for gas) when the form opens, so warnings reflect the wallet right now.
+  const { refreshBalances } = w;
+  const evmAddr = w.evm.address;
+  useEffect(() => {
+    if (evmAddr) void refreshBalances();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per wallet, not per balance change
+  }, [evmAddr]);
   const handoff = useSearchParams();
   const [payCurrency, setPayCurrency] = useState<PayCurrency | null>(handoff.get("payWith") === "USDT" ? "USDT" : handoff.get("payWith") === "NIM" ? "NIM" : null);
   const handoffFrom = handoff.get("from");
@@ -585,8 +595,11 @@ function DetailsStep({
     const exact = d.code ? operators.find((o) => o.code === d.code) : undefined;
     const brand = d.name.split(" ")[0]?.toLowerCase();
     const sibling = brand ? operators.find((o) => o.name.toLowerCase().startsWith(brand)) : undefined;
-    return (exact ?? sibling)?.code ?? null;
-  }, [detectQ.data, operators]);
+    // Flutterwave's generic "All networks" airtime serves every network (it routes by number), so it
+    // covers a network whose dedicated biller is missing from today's catalogue (e.g. MTN).
+    const allNetworks = service === "airtime" ? operators.find((o) => o.name === "All networks") : undefined;
+    return (exact ?? sibling ?? allNetworks)?.code ?? null;
+  }, [detectQ.data, operators, service]);
   // A single operator (e.g. Flutterwave's all-network airtime) needs no choice.
   const onlyOperator = isPhone && operators.length === 1 ? operators[0].code : null;
   const operatorId = chosenOperatorId ?? detectedPickId ?? onlyOperator;
@@ -691,7 +704,13 @@ function DetailsStep({
           label="Recipient phone number"
           htmlFor="phone"
           error={detectQ.data && !detectQ.data.valid && recipient.length > 6 ? `That doesn't look like a valid ${info.name} number.` : null}
-          hint={detectQ.data?.valid ? `✓ ${detectQ.data.national}${detectQ.data.operator ? ` · ${detectQ.data.operator.name} detected` : ""}` : "We'll detect the operator automatically."}
+          hint={
+            detectQ.data?.valid
+              ? `✓ ${detectQ.data.national}${detectQ.data.operator ? ` · ${detectQ.data.operator.name} detected` : ""}${
+                  detectQ.data.operator && detectedPickId && operators.find((o) => o.code === detectedPickId)?.name === "All networks" ? " · sent via All networks" : ""
+                }`
+              : "We'll detect the operator automatically."
+          }
         >
           <Input id="phone" inputMode="tel" autoComplete="tel" placeholder="801 234 5678" lead={`+${info.dialCode}`} value={recipient} onChange={(e) => setRecipient(e.target.value)} />
         </Field>
@@ -814,7 +833,7 @@ function DetailsStep({
 
       {estUsd ? (
         <p className="num -mt-2 text-xs text-fg-3">
-          ≈ {fmtUsd(estUsd)} before AuraPay fee. Final price is confirmed on the next screen.
+          ≈ {fmtUsd(estUsd)}. Final price is confirmed on the next screen.
         </p>
       ) : null}
 
@@ -887,6 +906,7 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
   // Known wallet balance below the amount: say so up front instead of failing in the wallet.
   const balance = q.payCurrency === "NIM" ? (w.nimiq.balanceLuna !== null ? w.nimiq.balanceLuna / 1e5 : null) : w.evm.usdtBalance;
   const insufficient = balance !== null && balance < q.payAmount;
+  const noGas = q.payCurrency === "USDT" && w.evm.polBalance !== null && w.evm.polBalance < MIN_POL_FOR_GAS;
 
   const confirm = useCallback(async () => {
     setBusy(true);
@@ -950,7 +970,7 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
           {order.productDescription ? <KV k="Product" v={order.productDescription} /> : null}
           {order.amountLocal !== null && order.localCurrency ? <KV k="They receive" v={fmtMoney(order.amountLocal, order.localCurrency)} /> : null}
           <KV k="Provider price" v={fmtUsd(q.providerCostUsd)} />
-          <KV k="AuraPay fee" v={fmtUsd(q.serviceFeeUsd)} />
+          <KV k="AuraPay fee" v={q.serviceFeeUsd > 0 ? fmtUsd(q.serviceFeeUsd) : "Free"} />
           <KV k="Total" v={fmtUsd(q.totalUsd)} strong />
             <KV k="Exchange rate" v={`1 ${q.payCurrency} = $${q.exchangeRate < 0.01 ? q.exchangeRate.toFixed(6) : q.exchangeRate.toFixed(4)}`} />
           
@@ -964,7 +984,7 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
           {q.payCurrency === "USDT" ? " The last few decimals identify your order so we can match your payment." : ""}
         </p>
         <p>
-          <span className="text-fg-2">Fees.</span> The provider price is what our utility partner charges; the AuraPay fee covers conversion and processing.
+          <span className="text-fg-2">Fees.</span> {q.serviceFeeUsd > 0 ? "The provider price is what our utility partner charges; the AuraPay fee covers conversion and processing." : "You pay exactly the provider price. AuraPay adds no fee."}
           {q.payCurrency === "USDT" ? " Your wallet also charges a small Polygon network fee in POL." : ""}
         </p>
         <p>
@@ -990,13 +1010,18 @@ function ReviewStep({ order, onSubmitted, onExpired }: { order: UtilityOrderDTO;
           {q.payCurrency === "USDT" ? " (plus a little POL for the network fee)" : ""}. Top up, or go back and pay with the other currency.
         </Notice>
       ) : null}
+      {noGas && !insufficient && !closed && !expired ? (
+        <Notice tone="warn" title="Add a little POL for the network fee">
+          {NO_GAS_MESSAGE}
+        </Notice>
+      ) : null}
       {expired || closed ? (
         <Button size="lg" variant="secondary" onClick={onExpired}>
           {closed ? "Start again" : "Quote expired — get a new price"}
         </Button>
       ) : (
         <>
-          <SlideToConfirm label={busy ? "Waiting for your wallet…" : `Slide to pay ${fmtCrypto(q.payAmount, q.payCurrency)}`} loading={busy} disabled={Boolean(error?.unknown) || Boolean(networkMismatch) || insufficient} onConfirm={() => void confirm()} />
+          <SlideToConfirm label={busy ? "Waiting for your wallet…" : `Slide to pay ${fmtCrypto(q.payAmount, q.payCurrency)}`} loading={busy} disabled={Boolean(error?.unknown) || Boolean(networkMismatch) || insufficient || noGas} onConfirm={() => void confirm()} />
           <p className="num text-center text-xs text-fg-3">
             Price held for {mm}:{String(ss).padStart(2, "0")} · Ref {order.ref}
           </p>

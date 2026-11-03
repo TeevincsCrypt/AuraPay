@@ -190,13 +190,24 @@ async function airtimeOperators(cc: string): Promise<OperatorDTO[]> {
   const groups = new Map<string, FlwItem[]>();
   for (const i of list) groups.set(`${i.biller_code}:${i.item_code}`, [...(groups.get(`${i.biller_code}:${i.item_code}`) ?? []), i]);
   const fx = await fxPerUsd(currencyOf(cc));
-  return [...groups.entries()].map(([code, group]) => {
+  const base = [...groups.entries()].map(([code, group]) => {
     const names = [...new Set(group.map(itemLabel))];
-    const nets = [...new Set(group.map((i) => networkFromName(`${i.biller_name ?? ""} ${i.name ?? ""} ${i.short_name ?? ""}`)).filter(Boolean))];
+    const nets = [...new Set(group.map((i) => networkFromName(`${i.biller_name ?? ""} ${i.name ?? ""} ${i.short_name ?? ""}`)).filter(Boolean))] as string[];
+    // A network name where recognisable; Flutterwave's generic "AIRTIME" item serves every network.
+    const name = nets.length === 1 ? nets[0] : names.length === 1 && !/^airtime$/i.test(names[0]) ? names[0] : "All networks";
+    return { code, name, nets };
+  });
+  // The generic item often carries a network (typically MTN) that has no biller of its own. List
+  // those networks by name too, paid through the generic item: "biller:item:NETWORK" keeps codes
+  // unique, and everything that pays splits off the first two parts.
+  const named = new Set(base.filter((b) => b.name !== "All networks").map((b) => b.name));
+  const virtual = base
+    .filter((b) => b.name === "All networks")
+    .flatMap((b) => b.nets.filter((n) => !named.has(n)).map((n) => (named.add(n), { code: `${b.code}:${n.toUpperCase().replace(/[^A-Z0-9]/g, "")}`, name: n, nets: [n] })));
+  return [...virtual, ...base].map(({ code, name }) => {
     return {
       code,
-      // A network name where recognisable; Flutterwave's generic "AIRTIME" item serves every network.
-      name: nets.length === 1 ? (nets[0] as string) : names.length === 1 && !/^airtime$/i.test(names[0]) ? names[0] : "All networks",
+      name,
       logoUrl: null,
       isData: false,
       isBundle: false,
