@@ -9,6 +9,7 @@ import { useWallet, WalletActionError } from "@/lib/client/wallet";
 import { fmtCrypto, shortAddress } from "@/lib/shared/format";
 import { SignInPanel } from "./auth/sign-in";
 import { CurrencyPicker } from "./currency-picker";
+import { AvatarEditor } from "./profile/avatar-editor";
 import { UsernameEditor } from "./transfers/username-editor";
 import { Avatar, Badge, Button, Card, cx, KV, Notice, Sheet, Spinner } from "./ui";
 
@@ -58,13 +59,7 @@ export function AccountSheet({ open, onClose }: { open: boolean; onClose: () => 
     <Sheet open={open} onClose={onClose} title="Account">
       {user ? (
         <div className="space-y-4 pb-2">
-          <div className="flex items-center gap-3">
-            <Avatar seed={user.address} size={52} />
-            <div className="min-w-0">
-              <p className="text-[15px] font-semibold text-fg">{user.username ? `@${user.username}` : "Nimiq account"}</p>
-              <p className="truncate font-mono text-xs text-fg-3">{user.address}</p>
-            </div>
-          </div>
+          <AvatarEditor />
           <div className="rounded-[20px] bg-surface-2 p-4">
             <p className="mb-2 text-sm font-semibold text-fg">Username</p>
             <UsernameEditor compact />
@@ -151,7 +146,7 @@ export function Greeting() {
     <>
       <div className="flex items-center justify-between gap-3">
         <button onClick={() => setOpen(true)} className="flex min-w-0 items-center gap-3 text-left">
-          <Avatar seed={user.address} size={44} />
+          <Avatar seed={user.address} size={44} src={user.avatarUrl} />
           <span className="min-w-0">
             <span className="block text-[17px] font-semibold text-fg">Hello{user.username ? `, @${user.username}` : ""} 👋</span>
             <span className="block truncate font-mono text-xs text-fg-3">{user.username ? "Tap to manage your account" : shortAddress(user.address, 9, 4)}</span>
@@ -222,7 +217,7 @@ function Sidebar({ path }: { path: string }) {
       </nav>
       {session.user ? (
         <button onClick={() => setOpen(true)} className="mt-auto flex items-center gap-3 rounded-[20px] bg-white p-3 text-left shadow-[var(--shadow-card)]">
-          <Avatar seed={session.user.address} size={40} />
+          <Avatar seed={session.user.address} size={40} src={session.user.avatarUrl} />
           <span className="min-w-0">
             <span className="block text-sm font-semibold text-fg">{session.user.username ? `@${session.user.username}` : "My account"}</span>
             <span className="block truncate font-mono text-[11px] text-fg-3">{shortAddress(session.user.address, 9, 4)}</span>

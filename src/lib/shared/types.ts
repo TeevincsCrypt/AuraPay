@@ -247,6 +247,8 @@ export interface UsernameProfile {
   nimAddress: string;
   /** Where USDT (Polygon) sent to this username arrives; null if they haven't verified one. */
   polygonAddress: string | null;
+  /** Profile picture, or null for the generated initials avatar. */
+  avatarUrl: string | null;
 }
 
 export type TransferStatus = "created" | "pending" | "confirmed" | "failed" | "expired";

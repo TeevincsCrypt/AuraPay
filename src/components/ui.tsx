@@ -131,7 +131,13 @@ function hashString(s: string) {
   return h >>> 0;
 }
 
-export function Avatar({ seed, label, size = 44, className }: { seed: string; label?: string; size?: number; className?: string }) {
+export function Avatar({ seed, label, size = 44, className, src }: { seed: string; label?: string; size?: number; className?: string; src?: string | null }) {
+  if (src) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- small same-origin avatar, already sized
+      <img src={src} alt="" aria-hidden width={size} height={size} className={cx("shrink-0 rounded-full bg-surface-2 object-cover", className)} style={{ width: size, height: size }} />
+    );
+  }
   const h = hashString(seed);
   const hue1 = h % 360;
   const hue2 = (hue1 + 40 + ((h >> 9) % 60)) % 360;

@@ -229,7 +229,7 @@ function SendFlow() {
         <Card className="p-5">
           <div className="flex items-start justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
-              <Avatar seed={transfer.toAddress} label={transfer.counterparty} size={44} />
+              <Avatar seed={transfer.toAddress} label={transfer.counterparty} size={44} src={recipient?.username === transfer.counterparty ? recipient.avatarUrl : null} />
               <div className="min-w-0">
                 <p className="text-xs text-fg-3">You&apos;re sending to</p>
                 <p className="truncate text-[17px] font-semibold text-fg">@{transfer.counterparty}</p>
@@ -282,7 +282,7 @@ function SendFlow() {
         error={lookup.error && clean(to).length >= 3 ? lookup.error.message : self ? "That's you." : null}
         hint={recipient && !self ? `✓ @${recipient.username}${recipient.polygonAddress ? " · NIM & USDT" : " · NIM only"}` : "Their AuraPay @username"}
       >
-        <Input id="to" lead={<AtSign className="size-4" />} placeholder="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} readOnly={Boolean(circleId)} value={to} onChange={(e) => setTo(e.target.value.replace(/\s/g, ""))} />
+        <Input id="to" lead={recipient && !self ? <Avatar seed={recipient.nimAddress} label={recipient.username} size={24} src={recipient.avatarUrl} /> : <AtSign className="size-4" />} placeholder="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} readOnly={Boolean(circleId)} value={to} onChange={(e) => setTo(e.target.value.replace(/\s/g, ""))} />
       </Field>
       {listQ.data?.recent.length ? (
         <div className="scrollbar-none -mx-4 -mt-2 flex gap-2 overflow-x-auto px-4 sm:mx-0 sm:px-0">

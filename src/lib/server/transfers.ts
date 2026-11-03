@@ -1,4 +1,5 @@
 import "server-only";
+import { avatarUrl, avatarVersion } from "./avatars";
 import type { PayCurrency, TransferDTO, TransferStatus, UsernameProfile } from "@/lib/shared/types";
 import { verifiedEvmAddresses } from "./auth/challenges";
 import { checkContribution } from "./circles";
@@ -44,6 +45,7 @@ export function normaliseUsername(raw: string): string {
 
 export interface MyProfile {
   username: string | null;
+  avatarUrl: string | null;
   receiveEvmAddress: string | null;
   displayCurrency: string;
 }
@@ -62,6 +64,7 @@ export async function getMyProfile(userId: string): Promise<MyProfile> {
   ))[0];
   return {
     username: r?.username ?? null,
+    avatarUrl: avatarUrl(userId, await avatarVersion(db, userId)),
     receiveEvmAddress: await defaultReceiveEvm(db, userId, r?.receive_evm_address ?? null),
     displayCurrency: r?.display_currency ?? "USD",
   };
@@ -117,7 +120,12 @@ export async function resolveUsername(raw: string): Promise<UsernameProfile> {
   const db = await getDb();
   const u = await profileRow(db, username);
   if (!u || !u.nimiq_address) throw new AppError("USER_NOT_FOUND", `No AuraPay user called @${username}.`, 404);
-  return { username: u.username, nimAddress: normaliseNimAddress(u.nimiq_address), polygonAddress: await defaultReceiveEvm(db, u.id, u.receive_evm_address) };
+  return {
+    username: u.username,
+    nimAddress: normaliseNimAddress(u.nimiq_address),
+    polygonAddress: await defaultReceiveEvm(db, u.id, u.receive_evm_address),
+    avatarUrl: avatarUrl(u.id, await avatarVersion(db, u.id)),
+  };
 }
 
 // ---------------------------------------------------------------------------

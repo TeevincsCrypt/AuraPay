@@ -15,6 +15,7 @@ export interface SessionInfo {
   address: string;
   evmAddresses: string[];
   username: string | null;
+  avatarUrl: string | null;
   receiveEvmAddress: string | null;
   displayCurrency: string;
 }

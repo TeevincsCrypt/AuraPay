@@ -620,6 +620,29 @@ await test("a transfer reminder settles automatically when the transfer is made"
   eq((await alice.del(`/api/recurring/${r.id}`)).status, 200, "deleted");
 });
 
+console.log("\nProfile pictures");
+// 1×1 PNG; the app uploads 320px WebP/JPEG, but any real JPEG/PNG/WebP is accepted.
+const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+await test("set, serve and remove a profile picture; others see it on your @username", async () => {
+  eq((await alice.req("PUT", "/api/me/avatar", { image: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" })).json.error?.code, "INVALID_IMAGE", "SVG refused");
+  eq((await alice.req("PUT", "/api/me/avatar", { image: `data:image/png;base64,${Buffer.from("not really a png").toString("base64")}` })).json.error?.code, "INVALID_IMAGE", "bytes must be an image");
+  eq((await alice.req("PUT", "/api/me/avatar", { image: `data:image/png;base64,${Buffer.alloc(300_000, 1).toString("base64")}` })).status, 422, "size capped");
+  const url = (await alice.req("PUT", "/api/me/avatar", { image: `data:image/png;base64,${PNG_1PX}` })).json.avatarUrl;
+  assert(/^\/api\/avatars\/[0-9a-f-]{36}\?v=1$/.test(url), `versioned url ${url}`);
+  eq((await alice.get("/api/auth/session")).json.user.avatarUrl, url, "in session");
+  const res = await fetch(APP + url);
+  eq(res.status, 200, "served");
+  eq(res.headers.get("content-type"), "image/png", "type from the bytes");
+  eq(res.headers.get("x-content-type-options"), "nosniff", "nosniff");
+  eq(Buffer.from(await res.arrayBuffer()).toString("base64"), PNG_1PX, "same bytes");
+  eq((await bob.get(`/api/users/${aliceName}`)).json.user.avatarUrl, url, "visible on the username");
+  const url2 = (await alice.req("PUT", "/api/me/avatar", { image: `data:image/png;base64,${PNG_1PX}` })).json.avatarUrl;
+  assert(url2.endsWith("?v=2"), "new version, new URL");
+  eq((await alice.del("/api/me/avatar")).json.avatarUrl, null, "removed");
+  eq((await fetch(APP + url)).status, 404, "gone");
+  eq((await new Client().req("PUT", "/api/me/avatar", { image: `data:image/png;base64,${PNG_1PX}` })).status, 401, "sign-in required");
+});
+
 console.log("\nSavings circles (rotating, wallet to wallet)");
 let circle;
 const contribute = async (client, toName, round, amount = 2) => {

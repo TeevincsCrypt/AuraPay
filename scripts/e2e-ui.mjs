@@ -398,6 +398,22 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await noOverflow(page);
       await page.screenshot({ path: `${OUT}/mobile-cable.png`, fullPage: true });
     });
+    await step("set a profile picture from the account sheet", async () => {
+      await page.goto(APP + "/", { waitUntil: "networkidle" });
+      await page.getByRole("button", { name: /Hello/ }).click();
+      // A real 64×48 PNG: the app crops it square and re-encodes it at 320px before uploading.
+      const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAEAAAAAwCAIAAAAuKetIAAAAZElEQVR4nO3PUQkAIBTAwBfMJCY2liH8OITBAtzm7PV1wwUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY8dgHaT2jxPSfGUQAAAABJRU5ErkJggg==", "base64");
+      await page.getByLabel("Profile photo file").setInputFiles({ name: "me.png", mimeType: "image/png", buffer: png });
+      try {
+        await page.locator('img[src^="/api/avatars/"]:visible').first().waitFor({ timeout: 10_000 });
+      } catch (e) {
+        await page.screenshot({ path: `${OUT}/avatar-fail.png`, fullPage: true });
+        throw e;
+      }
+      await page.getByRole("button", { name: /Change photo/ }).waitFor();
+      await page.screenshot({ path: `${OUT}/avatar-set.png` });
+      await page.keyboard.press("Escape");
+    });
     await step("USDT bill with no POL: free, explained up front, slider locked", async () => {
       await post("/_test/defi", { pol: "0" });
       try {
