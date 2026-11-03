@@ -20,7 +20,14 @@ export async function integrationStatus(): Promise<IntegrationStatus> {
   return {
     database,
     utilities: config.utilityProvider
-      ? { provider: config.utilityProvider, state: utilityEnvironment() }
+      ? {
+          provider: config.utilityProvider,
+          state: utilityEnvironment(),
+          // Live Flutterwave Bills needs whitelisted IPs: is a static-IP proxy configured? (host only)
+          ...(config.utilityProvider === "flutterwave"
+            ? { staticIpProxy: config.flutterwave.proxyUrl ? new URL(config.flutterwave.proxyUrl).host : null }
+            : {}),
+        }
       : { provider: null, state: "disconnected", reason: "FLUTTERWAVE_SECRET_KEY not set." },
     nimiq: { network: config.nimiq.network, merchantConfigured: Boolean(config.nimiq.merchantAddress), rpcConfigured: Boolean(config.nimiq.rpcUrl) },
     polygon: { merchantConfigured: Boolean(config.polygon.merchantAddress), rpcUrlHost: new URL(config.polygon.rpcUrl).host },

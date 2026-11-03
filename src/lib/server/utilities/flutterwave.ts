@@ -1,4 +1,5 @@
 import "server-only";
+import { fetch as undiciFetch, ProxyAgent } from "undici";
 import type { BillerDTO, CountryServices, OperatorDTO, OperatorProduct } from "@/lib/shared/types";
 import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js";
 import { countryByCode } from "@/lib/shared/countries";
@@ -57,6 +58,18 @@ function base(): string {
   return (testOverride("FLUTTERWAVE_URL_OVERRIDE") ?? "https://api.flutterwave.com").replace(/\/$/, "") + "/v3";
 }
 
+// Static-IP egress for Flutterwave (see config.flutterwave.proxyUrl). Only Flutterwave traffic uses it.
+let proxied: { url: string; fetch: typeof fetch } | null = null;
+function flwFetch(): typeof fetch {
+  const url = config.flutterwave.proxyUrl;
+  if (!url) return fetch;
+  if (proxied?.url !== url) {
+    const agent = new ProxyAgent(url);
+    proxied = { url, fetch: ((input: string, init: RequestInit) => undiciFetch(input, { ...(init as object), dispatcher: agent } as never)) as unknown as typeof fetch };
+  }
+  return proxied.fetch;
+}
+
 async function flw<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<FlwResponse<T>> {
   const key = config.flutterwave.secretKey;
   if (!key) throw new ProviderError("PROVIDER_DISCONNECTED", "The utility provider is not connected.", 503);
@@ -64,7 +77,7 @@ async function flw<T>(method: "GET" | "POST", path: string, body?: unknown): Pro
   for (let attempt = 0; attempt < (isRead ? 3 : 1); attempt++) {
     let res: Response;
     try {
-      res = await fetch(`${base()}${path}`, {
+      res = await flwFetch()(`${base()}${path}`, {
         method,
         headers: { Authorization: `Bearer ${key}`, Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}) },
         body: body ? JSON.stringify(body) : undefined,
@@ -121,6 +134,13 @@ function toProviderError(err: unknown): never {
   if (err instanceof FlwError) {
     if (err.status === 401) throw new ProviderError("PROVIDER_AUTH_FAILED", "Couldn't authenticate with Flutterwave. Check FLUTTERWAVE_SECRET_KEY.", 502);
     const m = err.message.toLowerCase();
+    if (/whitelist|ip address/.test(m)) {
+      log.error("flutterwave.ip_not_whitelisted", {
+        hint: "Live Flutterwave Bills only accepts whitelisted IPs. Set FLUTTERWAVE_PROXY_URL (static-IP proxy) and whitelist its IPs in Flutterwave → Settings → API.",
+        proxy: Boolean(config.flutterwave.proxyUrl),
+      });
+      throw new ProviderError("PROVIDER_IP_NOT_ALLOWED", "Our bills provider couldn't accept this from AuraPay's servers yet. Nothing was delivered.", 503, false);
+    }
     const friendly = /insufficient|balance/.test(m)
       ? "This service is temporarily unavailable (provider balance is low)."
       : /duplicate|already exist/.test(m)
@@ -589,7 +609,7 @@ export function flutterwaveProvider(): UtilityProvider {
               r = await pay(formats[i]);
             } catch (err) {
               // Only a definite 4xx about the customer is retried with the next format: nothing was charged.
-              const retryable = err instanceof FlwError && err.status >= 400 && err.status < 500 && !err.outcomeUnknown && !/duplicate|already|insufficient|balance/i.test(err.message);
+              const retryable = err instanceof FlwError && err.status >= 400 && err.status < 500 && !err.outcomeUnknown && !/duplicate|already|insufficient|balance|whitelist|ip address|unauthori|forbidden|permission/i.test(err.message);
               if (!retryable || i === formats.length - 1) throw err;
               log.warn("flutterwave.pay_format_retry", { ref: order.ref, status: err.status, message: err.message });
             }

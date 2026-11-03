@@ -87,6 +87,11 @@ export const config = {
 
   flutterwave: {
     secretKey: env("FLUTTERWAVE_SECRET_KEY"),
+    /**
+     * Outbound proxy with a static IP for Flutterwave calls (live Bills requires IP whitelisting,
+     * and Vercel's egress IPs change). Also picks up the URLs the Fixie / QuotaGuard integrations set.
+     */
+    proxyUrl: env("FLUTTERWAVE_PROXY_URL") ?? env("QUOTAGUARDSTATIC_URL") ?? env("FIXIE_URL"),
     /** Test keys (FLWSECK_TEST-…) run in Flutterwave's test mode; nothing is delivered. */
     get mode(): ReloadlyMode {
       return (this.secretKey ?? "").startsWith("FLWSECK_TEST") ? "sandbox" : "production";

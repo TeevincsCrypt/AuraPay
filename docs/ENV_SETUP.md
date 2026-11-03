@@ -67,6 +67,11 @@ Prices: Flutterwave charges bills in local currency. AuraPay converts the exact 
 
 *Alternative:* AuraPay still supports Reloadly (`RELOADLY_CLIENT_ID`, `RELOADLY_CLIENT_SECRET`, `RELOADLY_MODE`). If both are set, Flutterwave is used unless `UTILITY_PROVIDER=reloadly`.
 
+
+### `FLUTTERWAVE_PROXY_URL` (live mode): static IP for Flutterwave
+
+Live Flutterwave Bills only accepts requests from whitelisted IPs, and Vercel has none fixed. Sign up for a static outbound proxy (QuotaGuard Static or Fixie), set its URL here (`http://user:pass@host:port`), and add its two IPs in Flutterwave → Settings → Whitelisted IP addresses. Only Flutterwave requests go through it. `/status` shows the proxy host when it's active. Not needed with test keys.
+
 ### `NIMIQ_MERCHANT_ADDRESS`, `NIMIQ_NETWORK`, `NIMIQ_RPC_URL`: receive NIM
 
 The address where customers' NIM payments arrive. It's your own wallet: AuraPay never holds keys.

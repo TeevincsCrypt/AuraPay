@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
   cacheComponents: false,
   poweredByHeader: false,
   // Native/WASM database drivers must not be bundled.
-  serverExternalPackages: ["@electric-sql/pglite", "postgres"],
+  serverExternalPackages: ["@electric-sql/pglite", "postgres", "undici"],
   // SQL migrations are read at runtime (PGlite / DB_AUTO_MIGRATE); ship them with every function.
   outputFileTracingIncludes: {
     "/**": ["./supabase/migrations/**/*"],

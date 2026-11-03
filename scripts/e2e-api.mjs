@@ -487,6 +487,34 @@ await test("refund recorded only after on-chain verification", async () => {
   await mock("/_test/nimiq-tx", { hash: refundHash, from: reviewOrder.payToAddress, to: PAYER_NIM, value: Number(reviewOrder.quote.payAmountAtomic), recipientData: "", blockNumber: 1001, confirmations: 4, timestamp: Date.now(), executionResult: true });
   eq((await c.post(`/api/admin/orders/${reviewOrder.id}/refund`, { refundTxHash: refundHash }, auth)).json.order.status, "refunded", "refunded");
 });
+await test("Flutterwave IP whitelisting: friendly message, then an operator retry delivers once", async () => {
+  if (PROVIDER !== "flutterwave") return;
+  await mock("/_test/fail-next-topup", { errorCode: "IP_WHITELIST" });
+  const o = await createOrder(c);
+  const r = await payNim(c, o);
+  eq(r.status, "requires_review", "held for review");
+  assert(/couldn't accept this from AuraPay's servers/.test(r.statusReason ?? ""), `friendly reason, got ${r.statusReason}`);
+  assert(!/whitelist/i.test(r.statusReason ?? ""), "no operator jargon for the customer");
+  const auth = { authorization: `Bearer ${ADMIN}` };
+  eq((await c.post(`/api/admin/orders/${o.id}/retry`, {})).status, 401, "admin only");
+  const before = (await mock("/_test/counters")).topupsByCustomId;
+  const retried = (await c.post(`/api/admin/orders/${o.id}/retry`, {}, auth)).json.order;
+  eq(retried.status, "successful", "delivered on retry");
+  const after = (await mock("/_test/counters")).topupsByCustomId;
+  eq(after[`${o.ref}-R1`], 1, "sent once under a fresh reference");
+  eq(after[o.ref] ?? 0, before[o.ref] ?? 0, "original reference never reused");
+  eq((await c.post(`/api/admin/orders/${o.id}/retry`, {}, auth)).json.error?.code, "ORDER_STATE_CHANGED", "no second retry once delivered");
+  eq((await c.post(`/api/admin/orders/${firstOrder.id}/retry`, {}, auth)).status, 409, "only orders in review");
+});
+await test("Flutterwave calls go through the static-IP proxy when one is configured", async () => {
+  if (PROVIDER !== "flutterwave") return;
+  const st = (await (await fetch(APP + "/api/status")).json()).utilities;
+  if (!st.staticIpProxy) return; // this environment calls Flutterwave directly
+  eq(st.staticIpProxy, "localhost:4011", "proxy host shown, credentials never");
+  const stats = await (await fetch("http://localhost:4011/_stats")).json();
+  assert(stats.hits > 0, `Flutterwave traffic tunnelled through the proxy (${stats.hits})`);
+  eq(stats.unauthorized, 0, "proxy credentials sent");
+});
 await test("orders are private to their account", async () => {
   const other = new Client();
   await signIn(other);

@@ -429,8 +429,10 @@ export async function advanceOrder(userId: string, orderId: string): Promise<Uti
 // ---------------------------------------------------------------------------
 
 function providerOrder(o: OrderRow): ProviderOrder {
+  const attempts = Number(o.fulfil_attempts ?? 0);
   return {
-    ref: String(o.ref),
+    // Retries go to the provider under a fresh reference.
+    ref: attempts > 0 ? `${String(o.ref)}-R${attempts}` : String(o.ref),
     service: o.service as UtilityService,
     countryCode: String(o.country_code),
     operatorCode: String(o.operator_code ?? o.operator_id ?? ""),
@@ -607,6 +609,28 @@ export async function adminRecordRefund(orderId: string, refundTxHash: string): 
 }
 
 /** Manually resolves a reviewed order after checking with the provider (e.g. confirmed delivered). */
+/**
+ * Retries delivery of a paid order the provider definitely rejected (e.g. IP whitelisting, low
+ * provider balance), once the cause is fixed. Never for uncertain outcomes or unverified payments.
+ */
+export async function adminRetry(orderId: string): Promise<UtilityOrderDTO> {
+  const db = await getDb();
+  const o = (await db.query<OrderRow>("select * from utility_orders where id = $1", [orderId]))[0];
+  if (!o) throw new AppError("ORDER_NOT_FOUND", "Order not found.", 404);
+  if (o.status !== "requires_review") throw new AppError("ORDER_STATE_CHANGED", `Order is ${o.status}; only orders in review can be retried.`, 409);
+  if (!String(o.status_reason ?? "").startsWith("Provider rejected the order:") || o.provider_transaction_id) {
+    throw new AppError("NOT_RETRYABLE", "Only orders the provider clearly rejected (nothing delivered) can be retried. Check it with the provider, then refund or resolve it.", 409);
+  }
+  const paid = await db.query<{ id: string }>("select id from payments where order_kind = 'utility' and order_id = $1 and direction = 'in' and status = 'confirmed' limit 1", [orderId]);
+  if (!paid[0]) throw new AppError("NOT_RETRYABLE", "This order has no verified payment.", 409);
+  const moved = await transition(db, o, "paid", ["requires_review"], { fulfil_attempts: Number(o.fulfil_attempts ?? 0) + 1, status_reason: "Retrying delivery." });
+  if (!moved) throw new AppError("ORDER_STATE_CHANGED", "Order changed; try again.", 409);
+  log.info("utility_order.retry", { ref: moved.ref, attempt: moved.fulfil_attempts });
+  let order = await fulfil(db, moved);
+  if (order.status === "provider_pending") order = await pollProvider(db, order);
+  return toDTO(order, await latestPaymentHash(db, orderId));
+}
+
 export async function adminResolve(orderId: string, to: "successful" | "failed", note: string): Promise<UtilityOrderDTO> {
   const db = await getDb();
   const rows = await db.query<OrderRow>("select * from utility_orders where id = $1", [orderId]);

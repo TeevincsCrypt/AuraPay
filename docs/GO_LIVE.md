@@ -7,7 +7,11 @@ AuraPay switches to live fulfilment automatically when `FLUTTERWAVE_SECRET_KEY` 
 - [ ] Business verification (KYC) approved and **Live mode** enabled in the dashboard.
 - [ ] **Bills** enabled on the account. Ask Flutterwave support if bill payments return "not enabled".
 - [ ] **Fund the balance in local currency** (e.g. NGN for Nigeria): Dashboard → Balances. Bills are debited from it, not from USD.
-- [ ] **IP whitelisting off** (Settings → Whitelisted IP addresses). Vercel has no fixed IPs, so a whitelist blocks every request.
+- [ ] **IP whitelisting on, with a static IP.** Live Bills refuses payments unless IP whitelisting is enabled ("Please enable IP Whitelisting to access this service"), and Vercel's outgoing IPs change. So send Flutterwave traffic through a static-IP proxy:
+  1. Get a static outbound proxy: **QuotaGuard Static** (quotaguard.com) or **Fixie** (usefixie.com); both have free/cheap plans. They give you a proxy URL like `http://user:pass@host:port` and **two fixed IPs**.
+  2. In Vercel, set `FLUTTERWAVE_PROXY_URL` to that URL (`QUOTAGUARDSTATIC_URL` / `FIXIE_URL` from their Vercel integrations also work). Only Flutterwave calls use it.
+  3. In Flutterwave → Settings → **Whitelisted IP addresses**: enable it and add both IPs.
+  4. Redeploy, then `/status` → Utilities shows `staticIpProxy: <proxy host>`.
 - [ ] Copy the live **Secret key** (Settings → API Keys).
 
 ## 2. Vercel → Settings → Environment Variables (Production)
@@ -15,6 +19,7 @@ AuraPay switches to live fulfilment automatically when `FLUTTERWAVE_SECRET_KEY` 
 | Variable | Live value |
 |---|---|
 | `FLUTTERWAVE_SECRET_KEY` | `FLWSECK-…` (live) |
+| `FLUTTERWAVE_PROXY_URL` | your static-IP proxy URL (QuotaGuard Static / Fixie); whitelist its IPs in Flutterwave |
 | `NIMIQ_NETWORK` | `mainnet` |
 | `NIMIQ_MERCHANT_ADDRESS` | your **mainnet** NIM address that receives payments |
 | `NIMIQ_RPC_URL` | empty (uses `rpc.nimiqwatch.com`) or your own node |
@@ -46,7 +51,13 @@ Safety rules enforced by the code: live top-ups can't be paid with testnet NIM, 
 - **Earn and Swap** run entirely from the user's wallet on Polygon; users need a little **POL** for gas (the screens warn below 0.01 POL). AuraPay only records and verifies the transactions.
 
 - Customer payments arrive in your merchant wallets. Bills are paid from your Flutterwave balance, so keep it topped up and convert crypto to local currency as needed.
-- If Flutterwave fails after a verified payment (e.g. low balance), the order goes to **requires review** and the customer sees that. To resolve:
+- If Flutterwave fails after a verified payment (e.g. low balance, IP whitelisting), the order goes to **requires review** and the customer sees that. If the provider **clearly rejected** it (nothing delivered), fix the cause and **retry**: it's sent once more under a new reference (`<ref>-R1`):
+
+```bash
+curl -X POST -H "Authorization: Bearer $ADMIN_API_TOKEN" https://<host>/api/admin/orders/<id>/retry
+```
+
+  Otherwise (or if you'd rather not deliver it) refund or resolve it:
 
 ```bash
 # list orders needing attention

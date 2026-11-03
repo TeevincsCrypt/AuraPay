@@ -16,6 +16,7 @@
  *   node scripts/mock-providers.mjs [port=4010]
  */
 import http from "node:http";
+import net from "node:net";
 import { decodeFunctionData, encodeEventTopics, encodeAbiParameters, encodeFunctionResult, keccak256, parseAbi, parseTransaction, recoverTransactionAddress } from "viem";
 
 const PORT = Number(process.argv[2] ?? process.env.MOCK_PORT ?? 4010);
@@ -417,8 +418,9 @@ const server = http.createServer(async (req, res) => {
       const count = () => (isPower ? counters.payCalls++ : counters.topupCalls++);
       if (failNextTopup) {
         count();
+        const code = failNextTopup;
         failNextTopup = null;
-        return flwErr(res, 400, "Insufficient wallet balance");
+        return flwErr(res, 400, code === "IP_WHITELIST" ? "Please enable IP Whitelisting to access this service" : "Insufficient wallet balance");
       }
       if (!body.reference || !body.customer_id || !(body.amount > 0) || !body.country) return flwErr(res, 400, "Missing required field");
       // FLW_PAY_NATIONAL_ONLY=1: reject +intl phone formats (exercises AuraPay's format fallback).
@@ -653,4 +655,48 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => console.log(`mock providers on http://localhost:${PORT}`));
+
+// ---- Static-IP egress proxy stand-in (Fixie / QuotaGuard): a plain HTTP forward proxy that
+// requires Basic auth and counts what passes through it. Absolute-URI requests only (http targets).
+const PROXY_PORT = PORT + 1;
+const proxyStats = { hits: 0, unauthorized: 0 };
+http
+  .createServer((req, res) => {
+    if (req.url === "/_stats") return send(res, 200, proxyStats);
+    const auth = req.headers["proxy-authorization"] ?? "";
+    if (auth !== `Basic ${Buffer.from("proxyuser:proxypass").toString("base64")}`) {
+      proxyStats.unauthorized++;
+      res.writeHead(407, { "Proxy-Authenticate": "Basic" });
+      return res.end();
+    }
+    proxyStats.hits++;
+    const target = new URL(req.url);
+    const headers = { ...req.headers };
+    delete headers["proxy-authorization"];
+    const up = http.request({ host: target.hostname, port: target.port, path: target.pathname + target.search, method: req.method, headers }, (r) => {
+      res.writeHead(r.statusCode ?? 502, r.headers);
+      r.pipe(res);
+    });
+    up.on("error", () => send(res, 502, { error: "upstream" }));
+    req.pipe(up);
+  })
+  .on("connect", (req, socket, head) => {
+    // CONNECT tunnel (how real proxies carry HTTPS, and how undici's ProxyAgent connects).
+    if ((req.headers["proxy-authorization"] ?? "") !== `Basic ${Buffer.from("proxyuser:proxypass").toString("base64")}`) {
+      proxyStats.unauthorized++;
+      socket.end("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic\r\n\r\n");
+      return;
+    }
+    proxyStats.hits++;
+    const [host, port] = req.url.split(":");
+    const up = net.connect(Number(port), host, () => {
+      socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head?.length) up.write(head);
+      up.pipe(socket);
+      socket.pipe(up);
+    });
+    up.on("error", () => socket.destroy());
+    socket.on("error", () => up.destroy());
+  })
+  .listen(PROXY_PORT, () => console.log(`mock static-IP proxy on http://localhost:${PROXY_PORT}`));
 export const POLYGON_HEAD = polygonHead;
