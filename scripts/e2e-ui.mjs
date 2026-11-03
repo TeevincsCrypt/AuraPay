@@ -166,8 +166,8 @@ async function nimiqPayContext(opts, { nimKey, evmAccount, sentTxs }) {
       window.nimiqPay = { language: "en", userFiat: "USD", network: "testnet" };
       window.nimiq = {
         listAccounts: async () => ["NQ52 BBBB BBBB BBBB BBBB BBBB BBBB BBBB BBBB"],
-        // Like some Nimiq Pay builds: getBalance resolves with an error, so AuraPay must fall back to its own node.
-        getBalance: async () => ({ error: { type: "NETWORK_ERROR", message: "Balance unavailable" } }),
+        // Like Nimiq Pay while its light client syncs: reports 0. AuraPay must read the real balance from its node.
+        getBalance: async () => 0,
         isConsensusEstablished: async () => true,
         getBlockNumber: async () => 1000,
         sign: async (message) => window.__nimSign(message),
@@ -283,6 +283,10 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await page.getByText("Verified").first().waitFor({ timeout: 10_000 });
       await page.screenshot({ path: `${OUT}/mobile-account.png` });
       await page.keyboard.press("Escape");
+    });
+    await step("NIM balance comes from AuraPay's node even when Nimiq Pay reports 0", async () => {
+      await page.goto(APP + "/", { waitUntil: "networkidle" });
+      await page.getByText(/NIM 2,500/).first().waitFor({ timeout: 15_000 });
     });
     await step("claim a @username from Home", async () => {
       await page.goto(APP + "/", { waitUntil: "networkidle" });

@@ -131,27 +131,31 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     evm: { available: false, status: "idle", address: null, usdtBalance: null, polBalance: null, error: null },
   });
 
-  const loadNimBalance = useCallback(async (address: string) => {
+  /**
+   * NIM balance across every account Nimiq Pay shared. AuraPay's own node is asked first: Nimiq
+   * Pay's light client can report 0 (or an error) while it syncs. The host is the fallback, and
+   * the node is only trusted when it's on the same network as the wallet.
+   */
+  const loadNimBalance = useCallback(async (addresses: string[]) => {
     const nimiq = providerRef.current;
-    if (!nimiq) return;
+    if (!nimiq || !addresses.length) return;
     const set = (luna: number | null, err: string | null) => setState((s) => ({ ...s, nimiq: { ...s.nimiq, balanceLuna: luna, balanceError: err } }));
-    // 1) Ask Nimiq Pay. The host may resolve with an error object instead of throwing, or time out
-    //    while it syncs, so it gets a few seconds at most.
+    const hostNet = window.nimiqPay?.network ?? null;
+    let mismatch: string | null = null;
+    try {
+      const rs = await Promise.all(addresses.map((a) => api<{ luna: number; network: string }>(`/api/wallet/nim-balance?address=${encodeURIComponent(a)}`)));
+      if (!hostNet || rs.every((r) => r.network === hostNet)) return set(rs.reduce((t, r) => t + r.luna, 0), null);
+      mismatch = `Nimiq Pay is on ${hostNet}; AuraPay is on ${rs[0].network}.`;
+    } catch {}
     if (typeof nimiq.getBalance === "function") {
       try {
-        const luna: unknown = await Promise.race([nimiq.getBalance(address), new Promise((r) => setTimeout(() => r(null), 6_000))]);
-        if (typeof luna === "number" && Number.isFinite(luna)) return set(luna, null);
+        const vals: unknown[] = await Promise.all(
+          addresses.map((a) => Promise.race([nimiq.getBalance(a), new Promise((r) => setTimeout(() => r(null), 6_000))])),
+        );
+        if (vals.every((v) => typeof v === "number" && Number.isFinite(v))) return set((vals as number[]).reduce((t, v) => t + v, 0), null);
       } catch {}
     }
-    // 2) Fall back to AuraPay's own Nimiq node, but only if it's on the same network as the wallet.
-    try {
-      const r = await api<{ luna: number; network: string }>(`/api/wallet/nim-balance?address=${encodeURIComponent(address)}`);
-      const hostNet = window.nimiqPay?.network ?? null;
-      if (!hostNet || hostNet === r.network) return set(r.luna, null);
-      set(null, `Nimiq Pay is on ${hostNet}; AuraPay is on ${r.network}.`);
-    } catch {
-      set(null, "Balance unavailable right now.");
-    }
+    set(null, mismatch ?? "Balance unavailable right now.");
   }, []);
 
   const loadUsdtBalance = useCallback(async (address: string) => {
@@ -176,7 +180,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       try {
         localStorage.setItem(LS_KEY, "1");
       } catch {}
-      await loadNimBalance(addresses[0]);
+      await loadNimBalance(addresses);
     } catch (err) {
       const a = err instanceof WalletActionError ? err : nimiqErrorToAction(err);
       setState((s) => ({ ...s, nimiq: { ...s.nimiq, status: a.kind === "rejected" ? "idle" : "error", error: a.kind === "rejected" ? null : a.message } }));
@@ -248,7 +252,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const refreshBalances = useCallback(async () => {
     const tasks: Promise<void>[] = [];
-    if (state.nimiq.addresses[0]) tasks.push(loadNimBalance(state.nimiq.addresses[0]));
+    if (state.nimiq.addresses.length) tasks.push(loadNimBalance(state.nimiq.addresses));
     if (state.evm.address) tasks.push(loadUsdtBalance(state.evm.address));
     await Promise.all(tasks);
   }, [state.nimiq.addresses, state.evm.address, loadNimBalance, loadUsdtBalance]);
