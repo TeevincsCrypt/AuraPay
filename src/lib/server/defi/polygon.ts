@@ -1,7 +1,10 @@
 import "server-only";
-import { createPublicClient, http, getAddress, zeroAddress, type Address } from "viem";
+import { createPublicClient, decodeEventLog, decodeFunctionData, http, getAddress, zeroAddress, type Address } from "viem";
 import { polygon } from "viem/chains";
-import { AAVE_POOL, AAVE_POOL_ABI, aaveApy, ERC20_ABI, fromUnits, QUICKSWAP_ROUTER, TOKENS, TRANSFER_TOPIC, V2_FACTORY_ABI, V2_PAIR_ABI, V2_ROUTER_ABI } from "@/lib/shared/polygon-defi";
+import {
+  AAVE_POOL, AAVE_POOL_ABI, aaveApy, directionAssets, ERC20_ABI, fromUnits, QUICKSWAP_ROUTER, TOKENS, TRANSFER_TOPIC, V2_FACTORY_ABI, V2_PAIR_ABI, V2_ROUTER_ABI, WPOL, WPOL_EVENTS_ABI,
+  type SwapDirection, type SwapPairId,
+} from "@/lib/shared/polygon-defi";
 import { verifiedEvmAddresses } from "../auth/challenges";
 import { config } from "../config";
 import { getDb, iso, num, type Db } from "../db";
@@ -21,6 +24,8 @@ const client = () => createPublicClient({ chain: polygon, transport: http(config
 
 const USDT = TOKENS.USDT.address;
 const AUSDT = TOKENS.aPolUSDT.address;
+/** How defi_actions stores native POL in token_in / token_out. */
+const NATIVE = "pol";
 
 // ---------------------------------------------------------------------------
 // Earn position
@@ -61,72 +66,91 @@ export async function earnPosition(address: string): Promise<EarnPosition> {
 }
 
 // ---------------------------------------------------------------------------
-// Swap (QuickSwap V2): enabled only when NIM exists on Polygon with a real pool
+// Swap (QuickSwap V2): USDT ↔ POL always; NIM ↔ USDT once NIM exists on Polygon with a pool
 // ---------------------------------------------------------------------------
 
-export interface SwapConfig {
+export interface SwapPairConfig {
   enabled: boolean;
   reason: string | null;
-  nimToken: string | null;
+  /** The non-USDT side's token on Polygon (WPOL for POL). */
+  token: string | null;
   pair: string | null;
-  reserves: { nim: number; usdt: number } | null;
-  nimDecimals: number | null;
+  /** Pool reserves in whole units: `asset` is POL or NIM. */
+  reserves: { asset: number; usdt: number } | null;
+  decimals: number | null;
+}
+export interface SwapConfig {
+  pairs: Record<SwapPairId, SwapPairConfig>;
 }
 
 let swapCache: { at: number; value: SwapConfig } | null = null;
 
+async function pairConfig(id: SwapPairId): Promise<SwapPairConfig> {
+  const off = (reason: string, extra: Partial<SwapPairConfig> = {}): SwapPairConfig => ({ enabled: false, reason, token: null, pair: null, reserves: null, decimals: null, ...extra });
+  const label = id === "POL" ? "POL/USDT" : "NIM/USDT";
+  let tokenAddr: Address;
+  if (id === "POL") tokenAddr = getAddress(WPOL);
+  else {
+    const nim = config.nimPolygonToken;
+    if (!nim || !/^0x[0-9a-fA-F]{40}$/.test(nim)) return off("NIM isn't on Polygon yet. Nimiq's bridge to Polygon has been announced; swapping opens as soon as NIM on Polygon has a QuickSwap pool.");
+    tokenAddr = getAddress(nim);
+  }
+  try {
+    const c = client();
+    const factory = await c.readContract({ address: QUICKSWAP_ROUTER, abi: V2_ROUTER_ABI, functionName: "factory" });
+    const pair = await c.readContract({ address: factory, abi: V2_FACTORY_ABI, functionName: "getPair", args: [tokenAddr, USDT] });
+    if (pair === zeroAddress) return off(`There's no QuickSwap ${label} pool yet.`, { token: tokenAddr.toLowerCase() });
+    const [[r0, r1], token0, decimals] = await Promise.all([
+      c.readContract({ address: pair, abi: V2_PAIR_ABI, functionName: "getReserves" }),
+      c.readContract({ address: pair, abi: V2_PAIR_ABI, functionName: "token0" }),
+      id === "POL" ? Promise.resolve(18) : c.readContract({ address: tokenAddr, abi: ERC20_ABI, functionName: "decimals" }),
+    ]);
+    const assetIs0 = token0.toLowerCase() === tokenAddr.toLowerCase();
+    const reserves = { asset: fromUnits(assetIs0 ? r0 : r1, decimals), usdt: fromUnits(assetIs0 ? r1 : r0, 6) };
+    const base = { token: tokenAddr.toLowerCase(), pair: pair.toLowerCase(), reserves, decimals };
+    return reserves.usdt < 1 ? off(`The QuickSwap ${label} pool has no liquidity yet.`, base) : { enabled: true, reason: null, ...base };
+  } catch (err) {
+    log.warn("swap.config_failed", { pair: id, error: errorMessage(err) });
+    return off("Couldn't reach QuickSwap on Polygon right now.");
+  }
+}
+
 export async function swapConfig(): Promise<SwapConfig> {
   if (swapCache && Date.now() - swapCache.at < 5 * 60_000) return swapCache.value;
-  const off = (reason: string, extra: Partial<SwapConfig> = {}): SwapConfig => ({ enabled: false, reason, nimToken: null, pair: null, reserves: null, nimDecimals: null, ...extra });
-  let value: SwapConfig;
-  const nim = config.nimPolygonToken;
-  if (!nim || !/^0x[0-9a-fA-F]{40}$/.test(nim)) {
-    value = off("NIM isn't on Polygon yet. Nimiq's bridge to Polygon has been announced; swapping opens as soon as NIM on Polygon has a QuickSwap pool.");
-  } else {
-    try {
-      const c = client();
-      const nimAddr = getAddress(nim);
-      const factory = await c.readContract({ address: QUICKSWAP_ROUTER, abi: V2_ROUTER_ABI, functionName: "factory" });
-      const pair = await c.readContract({ address: factory, abi: V2_FACTORY_ABI, functionName: "getPair", args: [nimAddr, USDT] });
-      if (pair === zeroAddress) value = off("There's no QuickSwap NIM/USDT pool yet.", { nimToken: nimAddr.toLowerCase() });
-      else {
-        const [[r0, r1], token0, decimals] = await Promise.all([
-          c.readContract({ address: pair, abi: V2_PAIR_ABI, functionName: "getReserves" }),
-          c.readContract({ address: pair, abi: V2_PAIR_ABI, functionName: "token0" }),
-          c.readContract({ address: nimAddr, abi: ERC20_ABI, functionName: "decimals" }),
-        ]);
-        const nimIs0 = token0.toLowerCase() === nimAddr.toLowerCase();
-        const reserves = { nim: fromUnits(nimIs0 ? r0 : r1, decimals), usdt: fromUnits(nimIs0 ? r1 : r0, 6) };
-        value = reserves.usdt < 1
-          ? off("The QuickSwap NIM/USDT pool has no liquidity yet.", { nimToken: nimAddr.toLowerCase(), pair: pair.toLowerCase(), reserves, nimDecimals: decimals })
-          : { enabled: true, reason: null, nimToken: nimAddr.toLowerCase(), pair: pair.toLowerCase(), reserves, nimDecimals: decimals };
-      }
-    } catch (err) {
-      log.warn("swap.config_failed", { error: errorMessage(err) });
-      value = off("Couldn't reach QuickSwap on Polygon right now.");
-    }
-  }
-  swapCache = { at: Date.now(), value };
+  const [POL, NIM] = await Promise.all([pairConfig("POL"), pairConfig("NIM")]);
+  const value = { pairs: { POL, NIM } };
+  // Don't cache an RPC hiccup for five minutes.
+  if (POL.enabled || POL.reason?.startsWith("There") || POL.reason?.startsWith("The")) swapCache = { at: Date.now(), value };
   return value;
 }
 
-export type SwapDirection = "NIM_USDT" | "USDT_NIM";
+export async function enabledPair(direction: SwapDirection): Promise<SwapPairConfig & { token: string; decimals: number }> {
+  const cfg = (await swapConfig()).pairs[directionAssets(direction).pair];
+  if (!cfg.enabled || !cfg.token || cfg.decimals === null) throw new AppError("SWAP_UNAVAILABLE", cfg.reason ?? "Swap is unavailable.", 409);
+  return cfg as SwapPairConfig & { token: string; decimals: number };
+}
 
-export async function swapQuote(direction: SwapDirection, amountInUnits: bigint): Promise<{ amountOut: string; path: string[]; priceImpact: number | null }> {
-  const cfg = await swapConfig();
-  if (!cfg.enabled || !cfg.nimToken) throw new AppError("SWAP_UNAVAILABLE", cfg.reason ?? "Swap is unavailable.", 409);
-  const path = (direction === "NIM_USDT" ? [cfg.nimToken, USDT] : [USDT, cfg.nimToken]).map((a) => getAddress(a)) as Address[];
+/** Router path for a direction (native POL is routed through WPOL). */
+function swapPath(direction: SwapDirection, token: string): Address[] {
+  const { from } = directionAssets(direction);
+  return (from === "USDT" ? [USDT, token] : [token, USDT]).map((a) => getAddress(a)) as Address[];
+}
+
+export async function swapQuote(direction: SwapDirection, amountInUnits: bigint): Promise<{ amountOut: string; path: string[]; priceImpact: number | null; decimalsIn: number; decimalsOut: number }> {
+  const cfg = await enabledPair(direction);
+  const path = swapPath(direction, cfg.token);
   const amounts = await client().readContract({ address: QUICKSWAP_ROUTER, abi: V2_ROUTER_ABI, functionName: "getAmountsOut", args: [amountInUnits, path] });
   const out = amounts[amounts.length - 1];
+  const fromUsdt = directionAssets(direction).from === "USDT";
+  const decimalsIn = fromUsdt ? 6 : cfg.decimals, decimalsOut = fromUsdt ? cfg.decimals : 6;
   // Price impact vs the pool's mid price.
   let priceImpact: number | null = null;
-  if (cfg.reserves && cfg.nimDecimals !== null) {
-    const inDec = direction === "NIM_USDT" ? cfg.nimDecimals : 6, outDec = direction === "NIM_USDT" ? 6 : cfg.nimDecimals;
-    const mid = direction === "NIM_USDT" ? cfg.reserves.usdt / cfg.reserves.nim : cfg.reserves.nim / cfg.reserves.usdt;
-    const exec = fromUnits(out, outDec) / fromUnits(amountInUnits, inDec);
+  if (cfg.reserves) {
+    const mid = fromUsdt ? cfg.reserves.asset / cfg.reserves.usdt : cfg.reserves.usdt / cfg.reserves.asset;
+    const exec = fromUnits(out, decimalsOut) / fromUnits(amountInUnits, decimalsIn);
     priceImpact = mid > 0 ? Math.max(0, 1 - exec / mid) : null;
   }
-  return { amountOut: out.toString(), path: path.map((p) => p.toLowerCase()), priceImpact };
+  return { amountOut: out.toString(), path: path.map((p) => p.toLowerCase()), priceImpact, decimalsIn, decimalsOut };
 }
 
 // ---------------------------------------------------------------------------
@@ -210,18 +234,64 @@ async function check(r: Row): Promise<{ state: "pending" | "confirmed" | "failed
   // swap
   const tokenIn = String(r.token_in), tokenOut = String(r.token_out);
   // jsonb comes back as an object from Postgres drivers, or as text depending on how it was bound.
-  const det = (typeof r.details === "string" ? JSON.parse(r.details) : r.details) as { nimDecimals?: number } | null;
-  const decIn = tokenIn === USDT.toLowerCase() ? 6 : Number(det?.nimDecimals ?? 18);
-  const decOut = tokenOut === USDT.toLowerCase() ? 6 : Number(det?.nimDecimals ?? 18);
-  const sent = transfers(rc, tokenIn).find((x) => x.from === from);
+  const det = (typeof r.details === "string" ? JSON.parse(r.details) : r.details) as { nimDecimals?: number; decimalsIn?: number; decimalsOut?: number } | null;
+  const decIn = tokenIn === USDT.toLowerCase() ? 6 : tokenIn === NATIVE ? 18 : Number(det?.decimalsIn ?? det?.nimDecimals ?? 18);
+  const decOut = tokenOut === USDT.toLowerCase() ? 6 : tokenOut === NATIVE ? 18 : Number(det?.decimalsOut ?? det?.nimDecimals ?? 18);
+  const bad = { state: "failed" as const, reason: "This transaction didn't swap into your wallet." };
+
+  if (tokenIn !== NATIVE && tokenOut !== NATIVE) {
+    const sent = transfers(rc, tokenIn).find((x) => x.from === from);
+    const got = transfers(rc, tokenOut).find((x) => x.to === from);
+    return sent && got ? { state: "confirmed", amountIn: fromUnits(sent.value, decIn), amountOut: fromUnits(got.value, decOut) } : bad;
+  }
+  // Native POL never shows up as a token Transfer: check what the router was told to do (recipient
+  // and path from the calldata) and the WPOL wrap/unwrap the router performed.
+  let tx: { input?: string; value?: string } | null;
+  try {
+    tx = await polygonRpc<{ input?: string; value?: string }>("eth_getTransactionByHash", [r.tx_hash]);
+  } catch (err) {
+    return { state: "pending", reason: `Polygon RPC unavailable: ${errorMessage(err)}` };
+  }
+  if (!tx?.input) return { state: "pending", reason: "Waiting for the transaction." };
+  let call: { functionName: string; args: readonly unknown[] };
+  try {
+    call = decodeFunctionData({ abi: V2_ROUTER_ABI, data: tx.input as `0x${string}` }) as typeof call;
+  } catch {
+    return bad;
+  }
+  const wpolLogs = rc.logs
+    .filter((l) => l.address.toLowerCase() === WPOL.toLowerCase())
+    .flatMap((l) => {
+      try {
+        return [decodeEventLog({ abi: WPOL_EVENTS_ABI, data: l.data as `0x${string}`, topics: l.topics as [`0x${string}`, ...`0x${string}`[]] })];
+      } catch {
+        return [];
+      }
+    });
+  const router = QUICKSWAP_ROUTER.toLowerCase();
+  if (tokenOut === NATIVE) {
+    // USDT → POL: swapExactTokensForETH(amountIn, minOut, [USDT, WPOL], to = user, deadline)
+    if (call.functionName !== "swapExactTokensForETH") return bad;
+    const [, , path, to] = call.args as [bigint, bigint, string[], string];
+    if (String(to).toLowerCase() !== from || String(path[path.length - 1]).toLowerCase() !== WPOL.toLowerCase()) return bad;
+    const sent = transfers(rc, tokenIn).find((x) => x.from === from);
+    const unwrap = wpolLogs.find((e) => e.eventName === "Withdrawal" && String((e.args as { src: string }).src).toLowerCase() === router);
+    return sent && unwrap ? { state: "confirmed", amountIn: fromUnits(sent.value, decIn), amountOut: fromUnits((unwrap.args as { wad: bigint }).wad, 18) } : bad;
+  }
+  // POL → USDT: swapExactETHForTokens(minOut, [WPOL, USDT], to = user, deadline) with value = POL in
+  if (call.functionName !== "swapExactETHForTokens") return bad;
+  const [, path, to] = call.args as [bigint, string[], string];
+  if (String(to).toLowerCase() !== from || String(path[0]).toLowerCase() !== WPOL.toLowerCase()) return bad;
+  const value = BigInt(tx.value ?? "0x0");
+  const wrap = wpolLogs.find((e) => e.eventName === "Deposit" && String((e.args as { dst: string }).dst).toLowerCase() === router && (e.args as { wad: bigint }).wad === value);
   const got = transfers(rc, tokenOut).find((x) => x.to === from);
-  return sent && got ? { state: "confirmed", amountIn: fromUnits(sent.value, decIn), amountOut: fromUnits(got.value, decOut) } : { state: "failed", reason: "This transaction didn't swap into your wallet." };
+  return value > 0n && wrap && got ? { state: "confirmed", amountIn: fromUnits(value, 18), amountOut: fromUnits(got.value, decOut) } : bad;
 }
 
 function ledgerTitle(kind: DefiKind, d: { tokenIn?: string | null; tokenOut?: string | null }) {
   if (kind === "earn_supply") return "Deposited to Earn";
   if (kind === "earn_withdraw") return "Withdrew from Earn";
-  const sym = (a?: string | null) => (a && a.toLowerCase() === USDT.toLowerCase() ? "USDT" : "NIM");
+  const sym = (a?: string | null) => (a && a.toLowerCase() === USDT.toLowerCase() ? "USDT" : a === NATIVE ? "POL" : "NIM");
   return `Swapped ${sym(d.tokenIn)} → ${sym(d.tokenOut)}`;
 }
 
@@ -263,11 +333,13 @@ export async function recordAction(
   if (input.kind === "earn_supply") { tokenIn = USDT.toLowerCase(); tokenOut = AUSDT.toLowerCase(); }
   if (input.kind === "earn_withdraw") { tokenIn = AUSDT.toLowerCase(); tokenOut = USDT.toLowerCase(); }
   if (input.kind === "swap") {
-    const cfg = await swapConfig();
-    if (!cfg.enabled || !cfg.nimToken) throw new AppError("SWAP_UNAVAILABLE", cfg.reason ?? "Swap is unavailable.", 409);
-    tokenIn = input.direction === "NIM_USDT" ? cfg.nimToken : USDT.toLowerCase();
-    tokenOut = input.direction === "NIM_USDT" ? USDT.toLowerCase() : cfg.nimToken;
-    details = { direction: input.direction, nimDecimals: cfg.nimDecimals };
+    if (!input.direction) throw new AppError("VALIDATION_ERROR", "Swap direction is required.", 422);
+    const cfg = await enabledPair(input.direction);
+    const { from: a, to: b } = directionAssets(input.direction);
+    const addr = (x: string) => (x === "USDT" ? USDT.toLowerCase() : x === "POL" ? NATIVE : cfg.token);
+    tokenIn = addr(a);
+    tokenOut = addr(b);
+    details = { direction: input.direction, decimalsIn: a === "USDT" ? 6 : cfg.decimals, decimalsOut: b === "USDT" ? 6 : cfg.decimals };
   }
   const ref = newRef("DF");
   const hint = input.amount ? Number(input.amount) : null;
@@ -286,7 +358,7 @@ export async function recordAction(
         title: ledgerTitle(input.kind, { tokenIn, tokenOut }),
         subtitle: input.kind === "swap" ? "QuickSwap · Polygon" : "Aave · Polygon",
         amount: hint ?? 0,
-        currency: input.kind === "swap" && input.direction === "NIM_USDT" ? "NIM" : "USDT",
+        currency: input.kind === "swap" && input.direction ? directionAssets(input.direction).from : "USDT",
         amountUsd: input.kind === "swap" ? null : hint,
         status: "pending",
         isSimulated: false,
@@ -322,20 +394,20 @@ export async function usdValueOfNim(nim: number): Promise<number | null> {
   return rates ? nim * rates.nimUsd : null;
 }
 
-/** Wallet balances and router allowances for the swap screen (only when swap is enabled). */
-export async function swapBalances(address: string): Promise<{ nim: number; usdt: number; pol: number; allowance: { NIM: number; USDT: number } }> {
+/** Wallet balances and router allowances for the swap screen (NIM only once it exists on Polygon). */
+export async function swapBalances(address: string): Promise<{ nim: number | null; usdt: number; pol: number; allowance: { NIM: number; USDT: number } }> {
   const cfg = await swapConfig();
-  if (!cfg.enabled || !cfg.nimToken) throw new AppError("SWAP_UNAVAILABLE", cfg.reason ?? "Swap is unavailable.", 409);
   const c = client();
   const owner = getAddress(address);
-  const nim = getAddress(cfg.nimToken);
-  const dec = cfg.nimDecimals ?? 18;
+  const nimCfg = cfg.pairs.NIM;
+  const nim = nimCfg.enabled && nimCfg.token ? getAddress(nimCfg.token) : null;
+  const dec = nimCfg.decimals ?? 18;
   const [nimBal, usdtBal, pol, nimAllow, usdtAllow] = await Promise.all([
-    c.readContract({ address: nim, abi: ERC20_ABI, functionName: "balanceOf", args: [owner] }),
+    nim ? c.readContract({ address: nim, abi: ERC20_ABI, functionName: "balanceOf", args: [owner] }) : Promise.resolve(null),
     c.readContract({ address: USDT, abi: ERC20_ABI, functionName: "balanceOf", args: [owner] }),
     c.getBalance({ address: owner }),
-    c.readContract({ address: nim, abi: ERC20_ABI, functionName: "allowance", args: [owner, QUICKSWAP_ROUTER] }),
+    nim ? c.readContract({ address: nim, abi: ERC20_ABI, functionName: "allowance", args: [owner, QUICKSWAP_ROUTER] }) : Promise.resolve(0n),
     c.readContract({ address: USDT, abi: ERC20_ABI, functionName: "allowance", args: [owner, QUICKSWAP_ROUTER] }),
   ]);
-  return { nim: fromUnits(nimBal, dec), usdt: fromUnits(usdtBal, 6), pol: fromUnits(pol, 18), allowance: { NIM: fromUnits(nimAllow, dec), USDT: fromUnits(usdtAllow, 6) } };
+  return { nim: nimBal === null ? null : fromUnits(nimBal, dec), usdt: fromUnits(usdtBal, 6), pol: fromUnits(pol, 18), allowance: { NIM: fromUnits(nimAllow, dec), USDT: fromUnits(usdtAllow, 6) } };
 }

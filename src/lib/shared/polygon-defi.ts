@@ -9,6 +9,19 @@ export const TOKENS = {
   aPolUSDT: { address: "0x6ab707Aca953eDAeFBc4fD23bA73294241490620" as const, decimals: 6, symbol: "aPolUSDT" },
 } as const;
 
+/** Wrapped POL (formerly WMATIC): QuickSwap routes native POL through it. */
+export const WPOL = "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270" as const;
+
+/** Swap assets and the directions AuraPay offers (every pair is X ↔ USDT). */
+export type SwapAsset = "USDT" | "POL" | "NIM";
+export type SwapPairId = "POL" | "NIM";
+export const SWAP_DIRECTIONS = ["USDT_POL", "POL_USDT", "USDT_NIM", "NIM_USDT"] as const;
+export type SwapDirection = (typeof SWAP_DIRECTIONS)[number];
+export function directionAssets(d: SwapDirection): { from: SwapAsset; to: SwapAsset; pair: SwapPairId } {
+  const [from, to] = d.split("_") as [SwapAsset, SwapAsset];
+  return { from, to, pair: (from === "USDT" ? to : from) as SwapPairId };
+}
+
 /** Aave V3 Pool (Polygon). */
 export const AAVE_POOL = "0x794a61358D6845594F94dc1DB02A252b5b4814aD" as const;
 /** QuickSwap V2 router (Uniswap V2 compatible). */
@@ -33,7 +46,12 @@ export const V2_ROUTER_ABI = parseAbi([
   "function factory() view returns (address)",
   "function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[] amounts)",
   "function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) returns (uint256[] amounts)",
+  // Native POL legs (Uniswap V2 naming: "ETH" is the chain's native coin, routed through WPOL).
+  "function swapExactTokensForETH(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) returns (uint256[] amounts)",
+  "function swapExactETHForTokens(uint256 amountOutMin, address[] path, address to, uint256 deadline) payable returns (uint256[] amounts)",
 ]);
+/** WPOL events emitted when the router wraps (Deposit) or unwraps (Withdrawal) native POL. */
+export const WPOL_EVENTS_ABI = parseAbi(["event Deposit(address indexed dst, uint256 wad)", "event Withdrawal(address indexed src, uint256 wad)"]);
 export const V2_FACTORY_ABI = parseAbi(["function getPair(address tokenA, address tokenB) view returns (address)"]);
 export const V2_PAIR_ABI = parseAbi(["function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)", "function token0() view returns (address)"]);
 

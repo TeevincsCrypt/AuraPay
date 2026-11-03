@@ -74,8 +74,14 @@ const TX_ABI = parseAbi([
   "function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode)",
   "function withdraw(address asset, uint256 amount, address to) returns (uint256)",
   "function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) returns (uint256[] amounts)",
+  "function swapExactTokensForETH(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) returns (uint256[] amounts)",
+  "function swapExactETHForTokens(uint256 amountOutMin, address[] path, address to, uint256 deadline) payable returns (uint256[] amounts)",
 ]);
-const chain = { usdt: 25_500_000n, ausdt: 0n, nim: 1_000_000_000n, reserves: { nim: 5_000_000_000_000n, usdt: 60_000_000_000n } };
+const chain = { usdt: 25_500_000n, ausdt: 0n, nim: 1_000_000_000n, pol: 2n * 10n ** 18n, reserves: { nim: 5_000_000_000_000n, usdt: 60_000_000_000n }, polReserves: { pol: 2_000_000n * 10n ** 18n, usdt: 400_000_000_000n } };
+const WPOL = "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270", POLPAIR = "0x604229c960e5cacf2aaeac8be68ac07ba9df81c3";
+const cp = (amountIn, rin, rout) => (amountIn * 997n * rout) / (rin * 1000n + amountIn * 997n);
+const wpolLog = (topic, who, wad) => ({ address: WPOL, topics: [topic, pad32(who)], data: pad32(wad.toString(16)) });
+const DEPOSIT = "0xe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c", WITHDRAWAL = "0x7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65";
 const pad32 = (a) => `0x${a.replace(/^0x/, "").padStart(64, "0")}`;
 const xfer = (token, from, to, units) => ({ address: token, topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", pad32(from), pad32(to)], data: pad32(units.toString(16)) });
 const post = (path, body) => fetch(`${MOCK}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -91,6 +97,20 @@ async function simulatePolygonTx(tx, owner) {
   if (fn === "swapExactTokensForTokens") await spend(String(args[2][0]).toLowerCase(), DEFI.ROUTER, args[0]);
   if (fn === "supply") { chain.usdt -= args[1]; chain.ausdt += args[1]; logs = [xfer(DEFI.USDT, owner, DEFI.AUSDT, args[1])]; }
   if (fn === "withdraw") { const amt = args[1] > chain.ausdt ? chain.ausdt : args[1]; chain.ausdt -= amt; chain.usdt += amt; logs = [xfer(DEFI.USDT, DEFI.AUSDT, owner, amt)]; }
+  if (fn === "swapExactTokensForETH") {
+    const [amountIn] = args;
+    const out = cp(amountIn, chain.polReserves.usdt, chain.polReserves.pol);
+    chain.usdt -= amountIn;
+    chain.pol += out;
+    logs = [xfer(DEFI.USDT, owner, POLPAIR, amountIn), xfer(WPOL, POLPAIR, DEFI.ROUTER, out), wpolLog(WITHDRAWAL, DEFI.ROUTER, out)];
+  }
+  if (fn === "swapExactETHForTokens") {
+    const value = BigInt(tx.value ?? "0x0");
+    const out = cp(value, chain.polReserves.pol, chain.polReserves.usdt);
+    chain.pol -= value;
+    chain.usdt += out;
+    logs = [wpolLog(DEPOSIT, DEFI.ROUTER, value), xfer(WPOL, DEFI.ROUTER, POLPAIR, value), xfer(DEFI.USDT, POLPAIR, owner, out)];
+  }
   if (fn === "swapExactTokensForTokens") {
     const [amountIn, , path] = args; const nimIn = String(path[0]).toLowerCase() === DEFI.NIM;
     const rin = nimIn ? chain.reserves.nim : chain.reserves.usdt, rout = nimIn ? chain.reserves.usdt : chain.reserves.nim, f = amountIn * 997n;
@@ -98,8 +118,8 @@ async function simulatePolygonTx(tx, owner) {
     if (nimIn) { chain.nim -= amountIn; chain.usdt += out; } else { chain.usdt -= amountIn; chain.nim += out; }
     logs = [xfer(String(path[0]).toLowerCase(), owner, DEFI.PAIR, amountIn), xfer(String(path[1]).toLowerCase(), DEFI.PAIR, owner, out)];
   }
-  await post("/_test/defi", { balances: [{ token: DEFI.USDT, owner, units: chain.usdt.toString() }, { token: DEFI.AUSDT, owner, units: chain.ausdt.toString() }, { token: DEFI.NIM, owner, units: chain.nim.toString() }] });
-  await post("/_test/polygon-tx", { hash: tx.hash, timestamp: Date.now(), receipt: { status: "0x1", blockNumber: "0x3938700", from: owner, to, logs } });
+  await post("/_test/defi", { pol: chain.pol.toString(), balances: [{ token: DEFI.USDT, owner, units: chain.usdt.toString() }, { token: DEFI.AUSDT, owner, units: chain.ausdt.toString() }, { token: DEFI.NIM, owner, units: chain.nim.toString() }] });
+  await post("/_test/polygon-tx", { hash: tx.hash, timestamp: Date.now(), receipt: { status: "0x1", blockNumber: "0x3938700", from: owner, to, logs }, tx: { input: tx.data, value: tx.value ?? "0x0" } });
 }
 
 async function nimiqPayContext(opts, { nimKey, evmAccount, sentTxs }) {
@@ -429,11 +449,33 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       const usdt = page.getByRole("radio", { name: /Pay with USDT/ });
       if ((await usdt.getAttribute("aria-checked")) !== "true") throw new Error("USDT not preselected");
     });
-    await step("swap: live QuickSwap quote, approve + swap USDT → NIM", async () => {
+    await step("swap: top up POL with USDT (approve + swapExactTokensForETH), verified", async () => {
       await page.goto(APP + "/swap", { waitUntil: "networkidle" });
+      await page.getByRole("radio", { name: "USDT ↔ POL" }).waitFor();
+      await page.getByLabel(/You pay \(USDT\)/).fill("2");
+      await page.getByText(/Minimum received/).waitFor({ timeout: 10_000 });
+      await page.screenshot({ path: `${OUT}/swap-1-quote.png`, fullPage: true });
+      const before = sentTxs.length;
+      await page.getByRole("button", { name: /Swap USDT → POL/ }).click();
+      await page.getByText(/Swapped 2(\.0+)? USDT → [\d.,]+ POL/).waitFor({ timeout: 30_000 });
+      const evm = sentTxs.slice(before).filter((t) => t.kind === "evm").map((t) => t.data.slice(0, 10));
+      if (evm.at(-1) !== "0x18cbafe5") throw new Error(`expected swapExactTokensForETH last, got ${evm.join()}`);
+      await page.screenshot({ path: `${OUT}/swap-2-done.png`, fullPage: true });
+    });
+    await step("swap: POL → USDT sends POL as value, no approval", async () => {
+      await page.getByRole("button", { name: "Switch direction" }).click();
+      await page.getByLabel(/You pay \(POL\)/).fill("1");
+      await page.getByText(/Minimum received/).waitFor({ timeout: 10_000 });
+      const before = sentTxs.length;
+      await page.getByRole("button", { name: /Swap POL → USDT/ }).click();
+      await page.getByText(/Swapped 1(\.0+)? POL →/).waitFor({ timeout: 30_000 });
+      const evm = sentTxs.slice(before).filter((t) => t.kind === "evm");
+      if (evm.length !== 1 || evm[0].data.slice(0, 10) !== "0x7ff36ab5" || BigInt(evm[0].value) !== 10n ** 18n) throw new Error("expected one payable swapExactETHForTokens");
+    });
+    await step("swap: NIM ↔ USDT tab is honest about NIM on Polygon", async () => {
+      await page.getByRole("radio", { name: "NIM ↔ USDT" }).click();
       const cfg = await (await fetch(APP + "/api/swap/config")).json();
-      if (!cfg.swap?.enabled) {
-        // No NIM token on Polygon configured: the page must say so honestly and offer the alternatives.
+      if (!cfg.swap?.pairs?.NIM?.enabled) {
         await page.getByText(/NIM isn't on Polygon yet/).waitFor();
         await page.getByText("Earn on USDT").waitFor();
         await page.screenshot({ path: `${OUT}/swap-unavailable.png`, fullPage: true });
@@ -441,10 +483,8 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       }
       await page.getByLabel(/You pay \(USDT\)/).fill("5");
       await page.getByText(/Minimum received/).waitFor({ timeout: 10_000 });
-      await page.screenshot({ path: `${OUT}/swap-1-quote.png`, fullPage: true });
       await page.getByRole("button", { name: /Swap USDT → NIM/ }).click();
       await page.getByText(/Swapped 5(\.0+)? USDT →/).waitFor({ timeout: 30_000 });
-      await page.screenshot({ path: `${OUT}/swap-2-done.png`, fullPage: true });
     });
     await step("send NIM to another @username: review, slide, verified on-chain", async () => {
       const friend = await apiUserWithName(FRIEND_NAME);

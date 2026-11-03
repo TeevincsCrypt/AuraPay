@@ -87,6 +87,8 @@ const P = {
   FACTORY: "0x5757371414417b8c6caad45baef941abc7d3ab32",
   NIM: "0x4e494d0000000000000000000000000000000001", // NIM on Polygon (test token, 5 decimals)
   PAIR: "0x4e494d0000000000000000000000000000000002",
+  WPOL: "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270",
+  POLPAIR: "0x604229c960e5cacf2aaeac8be68ac07ba9df81c3", // QuickSwap WPOL/USDT
 };
 const defi = {
   bal: new Map(), // `${token}:${owner}` -> bigint
@@ -94,6 +96,7 @@ const defi = {
   pol: 2n * 10n ** 18n,
   liquidityRateRay: 36_800_000_000_000_000_000_000_000n, // 3.68% APR ≈ 3.75% APY
   reserves: { nim: 50_000_000n * 100_000n, usdt: 60_000n * 1_000_000n }, // 50M NIM / 60k USDT
+  polReserves: { pol: 2_000_000n * 10n ** 18n, usdt: 400_000n * 1_000_000n }, // 2M POL / 400k USDT ($0.20)
 };
 const DEFI_ABI = parseAbi([
   "function balanceOf(address) view returns (uint256)",
@@ -106,6 +109,11 @@ const DEFI_ABI = parseAbi([
   "function token0() view returns (address)",
   "function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[] amounts)",
 ]);
+/** [reserveIn, reserveOut] of the mock pool for a token pair. */
+function mockReserves(tin, tout) {
+  if (tin === P.WPOL || tout === P.WPOL) return tin === P.WPOL ? [defi.polReserves.pol, defi.polReserves.usdt] : [defi.polReserves.usdt, defi.polReserves.pol];
+  return tin === P.NIM ? [defi.reserves.nim, defi.reserves.usdt] : [defi.reserves.usdt, defi.reserves.nim];
+}
 function polygonCall(to, data) {
   to = String(to).toLowerCase();
   const { functionName: fn, args = [] } = decodeFunctionData({ abi: DEFI_ABI, data });
@@ -119,13 +127,15 @@ function polygonCall(to, data) {
   if (fn === "decimals") return r(to === P.NIM ? 5 : 6);
   if (fn === "getReserveData") return r({ configuration: 0n, liquidityIndex: 10n ** 27n, currentLiquidityRate: defi.liquidityRateRay, variableBorrowIndex: 10n ** 27n, currentVariableBorrowRate: 0n, currentStableBorrowRate: 0n, lastUpdateTimestamp: 0, id: 1, aTokenAddress: P.AUSDT, stableDebtTokenAddress: P.AUSDT, variableDebtTokenAddress: P.AUSDT, interestRateStrategyAddress: P.AUSDT, accruedToTreasury: 0n, unbacked: 0n, isolationModeTotalDebt: 0n });
   if (fn === "factory") return r(P.FACTORY);
-  if (fn === "getPair") return r([a(args[0]), a(args[1])].sort().join() === [P.NIM, P.USDT].sort().join() ? P.PAIR : "0x0000000000000000000000000000000000000000");
-  if (fn === "token0") return r(P.NIM);
-  if (fn === "getReserves") return r([defi.reserves.nim, defi.reserves.usdt, 0]);
+  if (fn === "getPair") {
+    const k = [a(args[0]), a(args[1])].sort().join();
+    return r(k === [P.NIM, P.USDT].sort().join() ? P.PAIR : k === [P.WPOL, P.USDT].sort().join() ? P.POLPAIR : "0x0000000000000000000000000000000000000000");
+  }
+  if (fn === "token0") return r(to === P.POLPAIR ? P.WPOL : P.NIM); // WPOL (0x0d…) sorts before USDT (0xc2…)
+  if (fn === "getReserves") return r(to === P.POLPAIR ? [defi.polReserves.pol, defi.polReserves.usdt, 0] : [defi.reserves.nim, defi.reserves.usdt, 0]);
   if (fn === "getAmountsOut") {
     const [amountIn, path] = args;
-    const nimIn = a(path[0]) === P.NIM;
-    const rin = nimIn ? defi.reserves.nim : defi.reserves.usdt, rout = nimIn ? defi.reserves.usdt : defi.reserves.nim;
+    const [rin, rout] = mockReserves(a(path[0]), a(path[path.length - 1]));
     const inFee = amountIn * 997n;
     return r([amountIn, (inFee * rout) / (rin * 1000n + inFee)]);
   }
@@ -569,6 +579,10 @@ const server = http.createServer(async (req, res) => {
     if (body.method === "eth_getTransactionReceipt") {
       const t = polyTxs.get(String(body.params?.[0]).toLowerCase());
       return ok(t ? t.receipt : null);
+    }
+    if (body.method === "eth_getTransactionByHash") {
+      const t = polyTxs.get(String(body.params?.[0]).toLowerCase());
+      return ok(t ? { hash: body.params[0], from: t.receipt.from, to: t.receipt.to, input: t.tx?.input ?? "0x", value: t.tx?.value ?? "0x0", blockNumber: t.receipt.blockNumber } : null);
     }
     if (body.method === "eth_getBlockByNumber") {
       const t = [...polyTxs.values()].find((x) => x.receipt.blockNumber === body.params?.[0]);

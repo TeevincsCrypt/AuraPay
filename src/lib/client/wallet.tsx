@@ -78,7 +78,8 @@ interface WalletApi extends WalletState {
   /** Connects the EVM wallet and proves control of it to the server with personal_sign. */
   linkEvm(): Promise<string>;
   ensureChain(chainIdHex: string): Promise<void>;
-  sendEvmTx(p: { chainIdHex: string; to: string; data: string }): Promise<{ hash: string; from: string }>;
+  /** `value` is native POL in wei (hex), for payable calls. */
+  sendEvmTx(p: { chainIdHex: string; to: string; data: string; value?: string }): Promise<{ hash: string; from: string }>;
   refreshBalances(): Promise<void>;
   disconnect(): void;
   payNim(p: { recipient: string; luna: string; memo: string }): Promise<string>;
@@ -345,7 +346,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const sendEvmTx = useCallback(
-    async ({ chainIdHex, to, data }: { chainIdHex: string; to: string; data: string }) => {
+    async ({ chainIdHex, to, data, value }: { chainIdHex: string; to: string; data: string; value?: string }) => {
       const eth = window.ethereum;
       if (!eth) throw new WalletActionError("unsupported", "No EVM wallet available.");
       await ensureChain(chainIdHex);
@@ -353,7 +354,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         const accounts = (await eth.request({ method: "eth_requestAccounts" })) as string[];
         const from = accounts?.[0];
         if (!from) throw new WalletActionError("failed", "No account was shared.");
-        const hash = (await eth.request({ method: "eth_sendTransaction", params: [{ from, to, data, value: "0x0" }] })) as string;
+        const hash = (await eth.request({ method: "eth_sendTransaction", params: [{ from, to, data, value: value ?? "0x0" }] })) as string;
         return { hash, from: from.toLowerCase() };
       } catch (err) {
         throw err instanceof WalletActionError ? err : evmErrorToAction(err);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SWAP_DIRECTIONS } from "@/lib/shared/polygon-defi";
 import { recordAction } from "@/lib/server/defi/polygon";
 import { enforceRateLimit, handler, json, parseBody } from "@/lib/server/http";
 import { requireUser } from "@/lib/server/session";
@@ -10,7 +11,7 @@ const Body = z.object({
   txHash: z.string().trim().min(66).max(66),
   from: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
   amount: z.string().regex(/^\d+(\.\d+)?$/).optional(),
-  direction: z.enum(["NIM_USDT", "USDT_NIM"]).optional(),
+  direction: z.enum(SWAP_DIRECTIONS).optional(),
 });
 
 /** Records a wallet-sent Aave/QuickSwap transaction; it's verified from its Polygon receipt. */

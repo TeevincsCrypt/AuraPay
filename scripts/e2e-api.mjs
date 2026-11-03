@@ -9,6 +9,7 @@ import { randomUUID, randomBytes } from "node:crypto";
 import { ed25519 } from "@noble/curves/ed25519";
 import { sha256 } from "@noble/hashes/sha256";
 import { privateKeyToAccount } from "viem/accounts";
+import { encodeEventTopics, encodeFunctionData, parseAbi } from "viem";
 
 const APP = process.env.APP ?? "http://localhost:3000";
 const MOCK = process.env.MOCK ?? "http://localhost:4010";
@@ -674,9 +675,9 @@ const NIM_P = "0x4e494d0000000000000000000000000000000001";
 const PAIR = "0x4e494d0000000000000000000000000000000002";
 const pad32 = (a) => `0x${a.replace(/^0x/, "").padStart(64, "0")}`;
 const transferLog = (token, from, to, units) => ({ address: token, topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", pad32(from), pad32(to)], data: pad32(BigInt(units).toString(16)) });
-const polyReceipt = async ({ from = PAYER_POLY, to, logs, status = "0x1" }) => {
+const polyReceipt = async ({ from = PAYER_POLY, to, logs, status = "0x1", tx }) => {
   const hash = polyHash();
-  await mock("/_test/polygon-tx", { hash, timestamp: Date.now(), receipt: { status, blockNumber: "0x3938700", from, to, logs } });
+  await mock("/_test/polygon-tx", { hash, timestamp: Date.now(), receipt: { status, blockNumber: "0x3938700", from, to, logs }, tx });
   return hash;
 };
 await test("position is read live from Polygon (aPolUSDT, wallet USDT, POL, live APY)", async () => {
@@ -718,13 +719,59 @@ await test("reverted, misdirected, foreign-wallet and reused transactions never 
   eq((await bob.post("/api/defi/actions", { kind: "earn_supply", txHash: once, from: bobEvm, amount: "2" })).json.error?.code, "TX_ALREADY_USED", "another user can't claim it");
 });
 
-console.log("\nSwap: QuickSwap NIM ↔ USDT on Polygon");
-await test("swap is offered only when NIM exists on Polygon with a QuickSwap pool", async () => {
-  const cfg = (await alice.get("/api/swap/config")).json.swap;
+console.log("\nSwap: QuickSwap USDT ↔ POL and NIM ↔ USDT on Polygon");
+const WPOL = "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270", POLPAIR = "0x604229c960e5cacf2aaeac8be68ac07ba9df81c3";
+const ROUTER_ABI = parseAbi([
+  "function swapExactTokensForETH(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) returns (uint256[] amounts)",
+  "function swapExactETHForTokens(uint256 amountOutMin, address[] path, address to, uint256 deadline) payable returns (uint256[] amounts)",
+]);
+const WPOL_ABI = parseAbi(["event Deposit(address indexed dst, uint256 wad)", "event Withdrawal(address indexed src, uint256 wad)"]);
+const wpolLog = (eventName, who, wad) => ({ address: WPOL, topics: encodeEventTopics({ abi: WPOL_ABI, eventName, args: eventName === "Deposit" ? { dst: who } : { src: who } }), data: pad32(wad.toString(16)) });
+await test("USDT ↔ POL is always offered (QuickSwap WPOL/USDT pool)", async () => {
+  const pol = (await alice.get("/api/swap/config")).json.swap.pairs.POL;
+  eq(pol.enabled, true, "enabled");
+  eq(pol.pair, POLPAIR, "WPOL/USDT pair via factory");
+  eq(pol.decimals, 18, "POL decimals");
+});
+await test("USDT → POL: quote, then verified from calldata + WPOL unwrap", async () => {
+  const q = (await alice.get("/api/swap/quote?direction=USDT_POL&amount=2")).json.quote;
+  const rin = 400_000n * 1_000_000n, rout = 2_000_000n * 10n ** 18n, inFee = 2_000_000n * 997n;
+  eq(q.amountOut, ((inFee * rout) / (rin * 1000n + inFee)).toString(), "constant-product quote");
+  eq(q.path.join(), `${USDT_P},${WPOL}`, "USDT → WPOL path");
+  eq(q.decimalsOut, 18, "out decimals");
+  const out = BigInt(q.amountOut);
+  const input = (to) => encodeFunctionData({ abi: ROUTER_ABI, functionName: "swapExactTokensForETH", args: [2_000_000n, out, [USDT_P, WPOL], to, 9_999_999_999n] });
+  const logs = [transferLog(USDT_P, PAYER_POLY, POLPAIR, 2_000_000), transferLog(WPOL, POLPAIR, ROUTER, out), wpolLog("Withdrawal", ROUTER, out)];
+  const hash = await polyReceipt({ to: ROUTER, logs, tx: { input: input(PAYER_POLY), value: "0x0" } });
+  const a = (await alice.post("/api/defi/actions", { kind: "swap", txHash: hash, from: PAYER_POLY, amount: "2", direction: "USDT_POL" })).json.action;
+  eq(a.status, "confirmed", "confirmed");
+  eq(a.amountIn, 2, "USDT in");
+  eq(a.amountOut, Number((Number(out) / 1e18).toFixed(8)), "POL out from the unwrap (stored to 8 dp)");
+  // Same receipt, but the router was told to pay someone else: never counted as yours.
+  const other = await polyReceipt({ to: ROUTER, logs, tx: { input: input("0x3333333333333333333333333333333333333333"), value: "0x0" } });
+  const b = (await alice.post("/api/defi/actions", { kind: "swap", txHash: other, from: PAYER_POLY, amount: "2", direction: "USDT_POL" })).json.action;
+  eq(b.status, "failed", "POL sent elsewhere is rejected");
+  const item = (await alice.get("/api/activity?limit=50")).json.items.find((i) => i.title === "Swapped USDT → POL");
+  assert(item, "activity shows the POL top-up");
+});
+await test("POL → USDT: value wrapped by the router, USDT to the wallet", async () => {
+  const value = 10n ** 18n;
+  const q = (await alice.get("/api/swap/quote?direction=POL_USDT&amount=1")).json.quote;
+  const out = BigInt(q.amountOut);
+  const input = encodeFunctionData({ abi: ROUTER_ABI, functionName: "swapExactETHForTokens", args: [out, [WPOL, USDT_P], PAYER_POLY, 9_999_999_999n] });
+  const logs = [wpolLog("Deposit", ROUTER, value), transferLog(WPOL, ROUTER, POLPAIR, value), transferLog(USDT_P, POLPAIR, PAYER_POLY, out)];
+  const hash = await polyReceipt({ to: ROUTER, logs, tx: { input, value: `0x${value.toString(16)}` } });
+  const a = (await alice.post("/api/defi/actions", { kind: "swap", txHash: hash, from: PAYER_POLY, amount: "1", direction: "POL_USDT" })).json.action;
+  eq(a.status, "confirmed", "confirmed");
+  eq(a.amountIn, 1, "POL in = tx value");
+  eq(a.amountOut, Number(out) / 1e6, "USDT out");
+});
+await test("NIM ↔ USDT is offered only when NIM exists on Polygon with a QuickSwap pool", async () => {
+  const cfg = (await alice.get("/api/swap/config")).json.swap.pairs.NIM;
   if (PROVIDER === "flutterwave") {
     eq(cfg.enabled, true, "enabled (NIM_POLYGON_TOKEN set, pair exists)");
     eq(cfg.pair, PAIR, "pair found via router.factory().getPair()");
-    eq(cfg.nimDecimals, 5, "decimals read from the token");
+    eq(cfg.decimals, 5, "decimals read from the token");
   } else {
     eq(cfg.enabled, false, "disabled without NIM on Polygon");
     assert(/Polygon/.test(cfg.reason), "explains why");

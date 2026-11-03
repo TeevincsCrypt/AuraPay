@@ -1,19 +1,18 @@
 import { z } from "zod";
-import { swapConfig, swapQuote } from "@/lib/server/defi/polygon";
+import { enabledPair, swapQuote } from "@/lib/server/defi/polygon";
 import { AppError, enforceRateLimit, handler, json, parseQuery } from "@/lib/server/http";
-import { toUnits } from "@/lib/shared/polygon-defi";
+import { directionAssets, SWAP_DIRECTIONS, toUnits } from "@/lib/shared/polygon-defi";
 
 export const dynamic = "force-dynamic";
 
-const Query = z.object({ direction: z.enum(["NIM_USDT", "USDT_NIM"]), amount: z.string().regex(/^\d+(\.\d+)?$/) });
+const Query = z.object({ direction: z.enum(SWAP_DIRECTIONS), amount: z.string().regex(/^\d+(\.\d+)?$/) });
 
 /** Live QuickSwap quote from the router's getAmountsOut. */
 export const GET = handler(async (req) => {
   enforceRateLimit(req, "swap:quote", 120, 60);
   const { direction, amount } = parseQuery(req.url, Query);
-  const cfg = await swapConfig();
-  if (!cfg.enabled) throw new AppError("SWAP_UNAVAILABLE", cfg.reason ?? "Swap is unavailable.", 409);
-  const units = toUnits(amount, direction === "NIM_USDT" ? cfg.nimDecimals ?? 18 : 6);
+  const cfg = await enabledPair(direction);
+  const units = toUnits(amount, directionAssets(direction).from === "USDT" ? 6 : cfg.decimals);
   if (units <= 0n) throw new AppError("INVALID_AMOUNT", "Enter an amount.", 422);
-  return json({ quote: await swapQuote(direction, units), nimDecimals: cfg.nimDecimals });
+  return json({ quote: await swapQuote(direction, units) });
 });
