@@ -168,8 +168,68 @@ async function cached<T>(key: string, ttl: number, fn: () => Promise<T>): Promis
   return value;
 }
 
+/** Category codes of Flutterwave's current Bills API (/bills/{code}/billers). */
+const CATEGORY_CODE: Record<Category, string> = { airtime: "AIRTIME", data_bundle: "MOBILEDATA", power: "UTILITYBILLS", cable: "CABLEBILLS", internet: "INTSERVICE" };
+
+interface FlwBiller {
+  biller_code?: string;
+  code?: string;
+  name?: string;
+  short_name?: string;
+  country_code?: string;
+  country?: string;
+}
+
+/**
+ * Products from Flutterwave's current Bills API: billers in a category, then each biller's items.
+ * These are the exact biller/item codes the payment endpoint (/billers/{biller}/items/{item}/payment)
+ * accepts. The legacy /bill-categories list is only a fallback: it can lag behind and list
+ * bundles that payment no longer accepts.
+ */
+async function currentItems(countryCode: string, category: Category): Promise<FlwItem[]> {
+  const cc = encodeURIComponent(countryCode);
+  const br = await flw<FlwBiller[]>("GET", `/bills/${CATEGORY_CODE[category]}/billers?country=${cc}`);
+  const billers = (Array.isArray(br.data) ? br.data : []).filter((b) => {
+    const c = (b.country_code ?? b.country ?? countryCode).toUpperCase();
+    return c === countryCode && (b.biller_code ?? b.code);
+  });
+  const out: FlwItem[] = [];
+  // A handful of billers per category; fetch their items a few at a time.
+  for (let i = 0; i < billers.length; i += 4) {
+    const batch = billers.slice(i, i + 4);
+    const lists = await Promise.all(
+      batch.map(async (b) => {
+        const code = String(b.biller_code ?? b.code);
+        try {
+          const ir = await flw<FlwItem[]>("GET", `/billers/${encodeURIComponent(code)}/items`);
+          return (Array.isArray(ir.data) ? ir.data : []).map((it) => ({
+            ...it,
+            biller_code: it.biller_code || code,
+            biller_name: it.biller_name || b.name || b.short_name,
+            country: it.country || countryCode,
+            is_airtime: it.is_airtime ?? category === "airtime",
+          }));
+        } catch (err) {
+          log.warn("flutterwave.biller_items_failed", { biller: code, error: errorMessage(err) });
+          return [];
+        }
+      }),
+    );
+    for (const l of lists) out.push(...l);
+  }
+  return out.filter((i) => i.item_code && (!i.country || i.country.toUpperCase() === countryCode));
+}
+
 async function items(countryCode: string, category: Category): Promise<FlwItem[]> {
-  return cached(`items:${countryCode}:${category}`, 10 * 60_000, async () => {
+  // Bundles and prices change rarely; caching also keeps calls through the static-IP proxy low.
+  return cached(`items:${countryCode}:${category}`, 30 * 60_000, async () => {
+    try {
+      const list = await currentItems(countryCode, category);
+      if (list.length) return list;
+      log.warn("flutterwave.catalogue_empty", { countryCode, category });
+    } catch (err) {
+      log.warn("flutterwave.catalogue_failed", { countryCode, category, error: errorMessage(err) });
+    }
     const r = await flw<FlwItem[]>("GET", `/bill-categories?country=${encodeURIComponent(countryCode)}&${category}=1`);
     return (Array.isArray(r.data) ? r.data : []).filter((i) => !i.country || i.country.toUpperCase() === countryCode);
   });

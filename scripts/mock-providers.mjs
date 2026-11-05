@@ -176,6 +176,7 @@ const FLW_ITEMS = {
     ],
     data_bundle: [
       { id: 10, biller_code: "BIL108", name: "1.5GB", country: "NG", is_airtime: false, biller_name: "MTN 1.5GB DATA", item_code: "MD136", short_name: "MTN 1.5GB", fee: 0, label_name: "Mobile Number", amount: 1000, validity_period: 30 },
+      { id: 13, biller_code: "BIL108", name: "MTN 200MB (retired)", country: "NG", is_airtime: false, biller_name: "MTN 200MB DATA", item_code: "MD100", short_name: "MTN 200MB", fee: 0, label_name: "Mobile Number", amount: 100, validity_period: 1, legacyOnly: true },
       { id: 12, biller_code: "BIL110", name: "AIRTEL 40 MB Data", country: "NG", is_airtime: false, biller_name: "AIRTEL 40 MB Data", item_code: "MD301", short_name: "AIRTEL 40MB", fee: 0, label_name: "Mobile Number", amount: 50, validity_period: 1 },
       { id: 11, biller_code: "BIL108", name: "3GB", country: "NG", is_airtime: false, biller_name: "MTN 3GB DATA", item_code: "MD138", short_name: "MTN 3GB", fee: 0, label_name: "Mobile Number", amount: 2000, validity_period: 30 },
     ],
@@ -380,6 +381,19 @@ const server = http.createServer(async (req, res) => {
     if (!/^Bearer FLWSECK(_TEST)?-/.test(req.headers.authorization ?? "")) return flwErr(res, 401, "Invalid authorization key");
     const sub = p.slice("/flw/v3".length);
     let m;
+    // Current Bills API: billers per category, then a biller's items. These are what payment accepts.
+    const CAT_OF = { AIRTIME: "airtime", MOBILEDATA: "data_bundle", UTILITYBILLS: "power", CABLEBILLS: "cable", INTSERVICE: "internet" };
+    if ((m = sub.match(/^\/bills\/([A-Z]+)\/billers$/))) {
+      const cc = url.searchParams.get("country") ?? "NG";
+      const list = (FLW_ITEMS[cc]?.[CAT_OF[m[1]]] ?? []).filter((i) => !i.legacyOnly);
+      const seen = new Map();
+      for (const i of list) if (!seen.has(i.biller_code)) seen.set(i.biller_code, { id: seen.size + 1, name: i.biller_name, short_name: i.short_name, biller_code: i.biller_code, country_code: cc });
+      return flwOk(res, [...seen.values()], "Billers fetched");
+    }
+    if ((m = sub.match(/^\/billers\/([^/]+)\/items$/)) && req.method === "GET") {
+      const items = Object.values(FLW_ITEMS).flatMap((c) => Object.values(c).flat()).filter((i) => i.biller_code === m[1] && !i.legacyOnly);
+      return flwOk(res, items.map(({ legacyOnly, ...i }) => i), "Items fetched");
+    }
     if (sub === "/bill-categories") {
       // FLW_CATALOG_DELAY_MS simulates Flutterwave's slow test-mode catalogue.
       await new Promise((r) => setTimeout(r, Number(process.env.FLW_CATALOG_DELAY_MS ?? 0)));
@@ -423,6 +437,9 @@ const server = http.createServer(async (req, res) => {
         return flwErr(res, 400, code === "IP_WHITELIST" ? "Please enable IP Whitelisting to access this service" : "Insufficient wallet balance");
       }
       if (!body.reference || !body.customer_id || !(body.amount > 0) || !body.country) return flwErr(res, 400, "Missing required field");
+      // Like live Flutterwave: only items in the current catalogue can be paid.
+      const known = Object.values(FLW_ITEMS).flatMap((c) => Object.values(c).flat()).find((i) => i.biller_code === m[1] && i.item_code === m[2]);
+      if (!known || known.legacyOnly) return flwErr(res, 400, "Invalid item code");
       // FLW_PAY_NATIONAL_ONLY=1: reject +intl phone formats (exercises AuraPay's format fallback).
       const isPhoneBill = ["BIL099", "BIL102", "BIL108", "BIL110", "BIL132"].includes(m[1]);
       if (process.env.FLW_PAY_NATIONAL_ONLY === "1" && isPhoneBill && !/^0\d+$/.test(body.customer_id)) {

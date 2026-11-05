@@ -246,6 +246,8 @@ await test("phone validation + operator auto-detect", async () => {
     const data = (await c.get("/api/utilities/operators?country=NG&service=data")).json.operators;
     eq(data.map((o) => o.name).sort().join(","), "Airtel Data,MTN Data", "data operators named by network");
     eq(data.find((o) => o.name === "MTN Data").products.length, 2, "bundles grouped under their network");
+    // Bundles come from the current Bills API (what payment accepts), not the legacy list's retired ones.
+    assert(!data.flatMap((o) => o.products).some((p) => p.code === "MD100"), "retired legacy bundle not offered");
   }
   eq((await c.get("/api/utilities/detect?country=NG&phone=12345")).json.valid, false, "invalid");
 });
