@@ -592,6 +592,71 @@ await test("USDT by username needs the recipient's verified wallet; exact amount
   const hash = await registerPolyTx(asOrder(t));
   eq((await alice.post(`/api/transfers/${t.id}/submit`, { txHash: hash })).json.transfer.status, "confirmed", "confirmed");
 });
+/** A native POL transfer as Polygon would record it (no token log: value on the transaction). */
+async function registerPolNative({ from = PAYER_POLY, to, wei, hash = polyHash(), status = "0x1" }) {
+  await mock("/_test/polygon-tx", {
+    hash,
+    timestamp: Date.now(),
+    receipt: { status, blockNumber: `0x${(60_000_000 - 20).toString(16)}`, from, to, logs: [] },
+    tx: { input: "0x", value: `0x${BigInt(wei).toString(16)}` },
+  });
+  return hash;
+}
+/** A valid Nimiq address (correct check digits) that belongs to nobody in AuraPay. */
+function externalNimAddress() {
+  const A = "0123456789ABCDEFGHJKLMNPQRSTUVXY";
+  const body = Array.from(randomBytes(32), (b) => A[b % 32]).join("");
+  const expanded = `${body}NQ00`.split("").map((c) => (/[A-Z]/.test(c) ? String(c.charCodeAt(0) - 55) : c)).join("");
+  let rem = 0;
+  for (let i = 0; i < expanded.length; i += 6) rem = Number(`${rem}${expanded.slice(i, i + 6)}`) % 97;
+  return `NQ${String(98 - rem).padStart(2, "0")}${body}`.replace(/(.{4})/g, "$1 ").trim();
+}
+await test("POL by username: native transfer verified from the transaction value", async () => {
+  const bobEvm = privateKeyToAccount(`0x${"22".repeat(32)}`).address.toLowerCase();
+  const t = (await alice.post("/api/transfers", { toUsername: bobName, currency: "POL", amount: 0.5, fromAddress: PAYER_POLY })).json.transfer;
+  eq(t.currency, "POL", "currency");
+  eq(t.toAddress, bobEvm, "to bob's Polygon wallet");
+  eq(t.amountAtomic, (5n * 10n ** 17n).toString(), "wei");
+  const tenth = (await alice.post("/api/transfers", { toUsername: bobName, currency: "POL", amount: 0.3, fromAddress: PAYER_POLY })).json.transfer;
+  eq(tenth.amountAtomic, (3n * 10n ** 17n).toString(), "0.3 POL is exactly 3e17 wei (no float error)");
+  assert(Math.abs(t.amountUsd - 0.1) < 1e-9, `priced at CoinGecko's POL rate, got ${t.amountUsd}`);
+  const bad = (await alice.post("/api/transfers", { toUsername: bobName, currency: "POL", amount: 0.5, fromAddress: PAYER_POLY })).json.transfer;
+  const wrong = await registerPolNative({ to: bobEvm, wei: 4n * 10n ** 17n });
+  eq((await alice.post(`/api/transfers/${bad.id}/submit`, { txHash: wrong })).json.transfer.status, "failed", "wrong amount rejected");
+  const hash = await registerPolNative({ to: bobEvm, wei: t.amountAtomic });
+  const done = (await alice.post(`/api/transfers/${t.id}/submit`, { txHash: hash })).json.transfer;
+  eq(done.status, "confirmed", "confirmed");
+  const got = (await bob.get("/api/activity?limit=50")).json.items.find((i) => i.category === "transfer_received" && i.currency === "POL");
+  eq(got?.title, `Received from @${aliceName}`, "bob sees it");
+});
+await test("send to a plain address: NIM to NQ…, USDT/POL to 0x…; AuraPay owners still see it", async () => {
+  // Validation
+  eq((await alice.post("/api/transfers", { toAddress: "NQ00 1234", currency: "NIM", amount: 1 })).json.error?.code, "INVALID_ADDRESS", "bad NQ");
+  eq((await alice.post("/api/transfers", { toAddress: "0x1234", currency: "USDT", amount: 1, fromAddress: PAYER_POLY })).json.error?.code, "INVALID_ADDRESS", "bad 0x");
+  eq((await alice.post("/api/transfers", { toAddress: externalNimAddress(), currency: "USDT", amount: 1, fromAddress: PAYER_POLY })).json.error?.code, "INVALID_ADDRESS", "NQ isn't a Polygon address");
+  eq((await alice.post("/api/transfers", { toAddress: "0x4444444444444444444444444444444444444444", toUsername: bobName, currency: "USDT", amount: 1, fromAddress: PAYER_POLY })).json.error?.code, "VALIDATION_ERROR", "one recipient only");
+  eq((await alice.post("/api/transfers", { toAddress: PAYER_POLY, currency: "USDT", amount: 1, fromAddress: PAYER_POLY })).json.error?.code, "SELF_TRANSFER", "not to the sending wallet");
+  // NIM to an outside address
+  const ext = externalNimAddress();
+  const n = (await alice.post("/api/transfers", { toAddress: ext.replace(/\s/g, "").toLowerCase(), currency: "NIM", amount: 2 })).json.transfer;
+  eq(n.counterpartyType, "address", "no username");
+  eq(n.toAddress, ext, "normalised NQ address");
+  const nh = nimHash();
+  await mock("/_test/nimiq-tx", { hash: nh, from: PAYER_NIM, to: n.toAddress, value: Number(n.amountAtomic), fee: 0, recipientData: Buffer.from(n.memo).toString("hex"), blockNumber: 1000, confirmations: 5, timestamp: Date.now(), executionResult: true });
+  eq((await alice.post(`/api/transfers/${n.id}/submit`, { txHash: nh })).json.transfer.status, "confirmed", "NIM to address confirmed");
+  const sent = (await alice.get("/api/activity?limit=50")).json.items.find((i) => i.ref === n.ref);
+  assert(sent?.title.startsWith("Sent to NQ"), `activity title ${sent?.title}`);
+  // USDT to an outside 0x address
+  const u = (await alice.post("/api/transfers", { toAddress: "0x4444444444444444444444444444444444444444", currency: "USDT", amount: 1.5, fromAddress: PAYER_POLY })).json.transfer;
+  eq(u.counterparty, "0x4444…4444", "short address label");
+  eq((await alice.post(`/api/transfers/${u.id}/submit`, { txHash: await registerPolyTx(asOrder(u)) })).json.transfer.status, "confirmed", "USDT to address confirmed");
+  // POL to bob's 0x address (not his username): bob still gets it in Activity
+  const bobEvm = privateKeyToAccount(`0x${"22".repeat(32)}`).address;
+  const p = (await alice.post("/api/transfers", { toAddress: bobEvm, currency: "POL", amount: 0.25, fromAddress: PAYER_POLY })).json.transfer;
+  eq(p.counterparty, bobName, "address recognised as @bob");
+  eq((await alice.post(`/api/transfers/${p.id}/submit`, { txHash: await registerPolNative({ to: bobEvm.toLowerCase(), wei: p.amountAtomic }) })).json.transfer.status, "confirmed", "POL confirmed");
+  eq((await bob.get(`/api/transfers/${p.id}`)).json.transfer.direction, "received", "bob can see it");
+});
 await test("transfers are private to their two parties", async () => {
   const eve = new Client();
   await signIn(eve);

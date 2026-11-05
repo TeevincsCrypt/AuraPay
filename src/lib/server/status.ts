@@ -33,7 +33,7 @@ export async function integrationStatus(): Promise<IntegrationStatus> {
     polygon: { merchantConfigured: Boolean(config.polygon.merchantAddress), rpcUrlHost: new URL(config.polygon.rpcUrl).host },
     rails: paymentRails(),
     rates: rates
-      ? { state: "live", source: rates.source, nimUsd: rates.nimUsd, usdtUsd: rates.usdtUsd }
+      ? { state: "live", source: rates.source, nimUsd: rates.nimUsd, usdtUsd: rates.usdtUsd, polUsd: rates.polUsd }
       : { state: "unavailable", source: "coingecko", reason: ratesError },
     merchant: { nimAddress: config.nimiq.merchantAddress, polygonAddress: config.polygon.merchantAddress },
   };

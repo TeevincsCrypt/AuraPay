@@ -1,6 +1,7 @@
 import "server-only";
 import { avatarUrl, avatarVersion } from "./avatars";
-import type { PayCurrency, TransferDTO, TransferStatus, UsernameProfile } from "@/lib/shared/types";
+import type { TransferCurrency, TransferDTO, TransferStatus, UsernameProfile } from "@/lib/shared/types";
+import { toUnits } from "@/lib/shared/polygon-defi";
 import { verifiedEvmAddresses } from "./auth/challenges";
 import { checkContribution } from "./circles";
 import { config } from "./config";
@@ -9,11 +10,12 @@ import { AppError } from "./http";
 import { insertLedger, newRef, updateLedgerBySource } from "./ledger";
 import { errorMessage, log } from "./log";
 import { getRatesSafe } from "./rates";
+import { isValidNimiqAddress } from "./auth/nimiq-signature";
 import { normaliseNimAddress, verifyNimiqTransfer } from "./payments/nimiq";
-import { isEvmAddress, verifyPolygonUsdtTransfer } from "./payments/polygon";
+import { isEvmAddress, verifyPolygonNativeTransfer, verifyPolygonUsdtTransfer } from "./payments/polygon";
 
 /**
- * Usernames and wallet-to-wallet transfers.
+ * Usernames and wallet-to-wallet transfers (NIM, USDT and POL), to an @username or to any address.
  *
  * A @username points at its owner's receiving addresses: the Nimiq address they signed in
  * with (NIM) and a signature-verified EVM address (USDT on Polygon). Sending is direct from
@@ -132,23 +134,49 @@ export async function resolveUsername(raw: string): Promise<UsernameProfile> {
 // Transfers
 // ---------------------------------------------------------------------------
 
-type Row = Record<string, unknown> & { id: string; status: TransferStatus; from_user_id: string; to_user_id: string };
+type Row = Record<string, unknown> & { id: string; status: TransferStatus; from_user_id: string; to_user_id: string | null };
 
-async function usernameOf(db: Db, userId: string): Promise<string> {
+async function usernameOf(db: Db, userId: string | null): Promise<string> {
+  if (!userId) return "unknown";
   return (await db.query<{ username: string | null }>("select username from users where id = $1", [userId]))[0]?.username ?? "unknown";
+}
+
+const shortAddr = (a: string) => (a.startsWith("0x") ? `${a.slice(0, 6)}…${a.slice(-4)}` : `${a.slice(0, 4)} ${a.slice(4, 8)} … ${a.slice(-4)}`);
+const DECIMALS: Record<TransferCurrency, number> = { NIM: 5, USDT: 6, POL: 18 };
+
+/** "@name" when the other side is an AuraPay user with a username, else a short address. */
+async function sideLabel(db: Db, userId: string | null, address: string): Promise<{ label: string; type: "user" | "address" }> {
+  const name = userId ? (await db.query<{ username: string | null }>("select username from users where id = $1", [userId]))[0]?.username : null;
+  return name ? { label: name, type: "user" } : { label: shortAddr(address), type: "address" };
+}
+
+/** The AuraPay user who owns an address (their sign-in Nimiq address, or a verified Polygon wallet). */
+async function ownerOfAddress(db: Db, chain: "nimiq" | "polygon", address: string): Promise<string | null> {
+  if (chain === "nimiq") {
+    const rows = await db.query<{ id: string; nimiq_address: string | null }>("select id, nimiq_address from users where nimiq_address is not null");
+    return rows.find((r) => normaliseNimAddress(r.nimiq_address!) === normaliseNimAddress(address))?.id ?? null;
+  }
+  return (
+    await db.query<{ user_id: string }>(
+      "select user_id from wallet_connections where chain = 'polygon' and lower(address) = $1 and verified_at is not null order by last_seen_at desc limit 1",
+      [address.toLowerCase()],
+    )
+  )[0]?.user_id ?? null;
 }
 
 async function toDTO(db: Db, r: Row, viewerId: string): Promise<TransferDTO> {
   const sent = r.from_user_id === viewerId;
+  const other = sent ? await sideLabel(db, (r.to_user_id as string | null) ?? null, String(r.to_address)) : await sideLabel(db, r.from_user_id, String(r.from_address));
   return {
     id: r.id,
     ref: String(r.ref),
     direction: sent ? "sent" : "received",
-    currency: r.currency as PayCurrency,
+    currency: r.currency as TransferCurrency,
     amount: num(r.amount),
     amountAtomic: String(r.amount_atomic),
     amountUsd: numOrNull(r.amount_usd),
-    counterparty: await usernameOf(db, sent ? r.to_user_id : r.from_user_id),
+    counterparty: other.label,
+    counterpartyType: other.type,
     toAddress: String(r.to_address),
     fromAddress: (r.from_address as string) ?? null,
     note: (r.note as string) ?? null,
@@ -163,8 +191,11 @@ async function toDTO(db: Db, r: Row, viewerId: string): Promise<TransferDTO> {
 }
 
 export interface CreateTransferInput {
-  toUsername: string;
-  currency: PayCurrency;
+  /** Exactly one of toUsername / toAddress. */
+  toUsername?: string;
+  /** A Nimiq address (NQ…) for NIM, or a 0x address for USDT / POL. */
+  toAddress?: string;
+  currency: TransferCurrency;
   amount: number;
   note?: string;
   /** USDT: the verified wallet the transfer will be sent from. */
@@ -178,55 +209,80 @@ export interface CreateTransferInput {
 export async function createTransfer(userId: string, input: CreateTransferInput): Promise<TransferDTO> {
   const db = await getDb();
   const me = (await db.query<{ username: string | null; nimiq_address: string | null }>("select username, nimiq_address from users where id = $1", [userId]))[0];
-  if (!me?.username) throw new AppError("USERNAME_REQUIRED", "Choose your @username before sending.", 422);
-  const to = await resolveUsername(input.toUsername);
-  const recipient = await profileRow(db, to.username);
-  if (recipient.id === userId) throw new AppError("SELF_TRANSFER", "You can't send to yourself.", 422);
+  const evmChain = input.currency !== "NIM";
+  if (Boolean(input.toUsername) === Boolean(input.toAddress)) throw new AppError("VALIDATION_ERROR", "Send to an @username or to an address.", 422);
+
+  // Recipient: an @username (their receiving address) or a plain address (maybe an AuraPay user's).
+  let recipientId: string | null;
+  let toAddress: string;
+  if (input.toUsername) {
+    if (!me?.username) throw new AppError("USERNAME_REQUIRED", "Choose your @username before sending.", 422);
+    const to = await resolveUsername(input.toUsername);
+    recipientId = (await profileRow(db, to.username)).id;
+    if (recipientId === userId) throw new AppError("SELF_TRANSFER", "You can't send to yourself.", 422);
+    if (evmChain && !to.polygonAddress) throw new AppError("NO_USDT_ADDRESS", `@${to.username} hasn't set up a Polygon wallet yet. Send NIM instead.`, 422);
+    toAddress = evmChain ? to.polygonAddress! : to.nimAddress;
+  } else {
+    const raw = input.toAddress!.trim();
+    if (evmChain) {
+      if (!isEvmAddress(raw) || /^0x0{40}$/i.test(raw)) throw new AppError("INVALID_ADDRESS", "Enter a valid Polygon address (0x…).", 422);
+      toAddress = raw.toLowerCase();
+    } else {
+      if (!isValidNimiqAddress(raw)) throw new AppError("INVALID_ADDRESS", "Enter a valid Nimiq address (NQ…).", 422);
+      toAddress = normaliseNimAddress(raw).replace(/(.{4})/g, "$1 ").trim();
+    }
+    recipientId = await ownerOfAddress(db, evmChain ? "polygon" : "nimiq", toAddress);
+  }
 
   const note = input.note?.trim().slice(0, MAX_NOTE) || null;
-  let atomic: bigint;
-  let toAddress: string;
   let fromAddress: string;
   let memo: string | null = null;
   const ref = newRef("TX");
+  let atomic: bigint;
+  try {
+    // Shortest exact decimal ("0.3", not 0.3.toFixed(18) = "0.299999999999999989"); toUnits truncates extra digits.
+    const str = /e/i.test(String(input.amount)) ? input.amount.toFixed(Math.min(DECIMALS[input.currency], 20)) : String(input.amount);
+    atomic = toUnits(str, DECIMALS[input.currency]);
+  } catch {
+    throw new AppError("INVALID_AMOUNT", "Enter an amount.", 422);
+  }
+  if (atomic < 1n) throw new AppError("INVALID_AMOUNT", "Enter an amount.", 422);
   if (input.currency === "NIM") {
     if (!config.nimiq.rpcUrl) throw new AppError("PAYMENT_RAIL_UNAVAILABLE", "NIM transfers aren't available right now.", 503);
-    atomic = BigInt(Math.round(input.amount * 1e5));
-    if (atomic < 1n) throw new AppError("INVALID_AMOUNT", "Enter an amount.", 422);
-    toAddress = to.nimAddress;
-    fromAddress = normaliseNimAddress(me.nimiq_address!);
+    if (!me?.nimiq_address) throw new AppError("PAYER_NOT_VERIFIED", "Sign in with Nimiq Pay to send NIM.", 422);
+    fromAddress = normaliseNimAddress(me.nimiq_address);
+    if (normaliseNimAddress(toAddress) === fromAddress) throw new AppError("SELF_TRANSFER", "That's the address you're sending from.", 422);
     // The memo binds the on-chain transaction to this transfer (Nimiq data field, max 64 bytes).
     memo = `AuraPay ${ref}${note ? ` ${note}` : ""}`.slice(0, 64);
     while (new TextEncoder().encode(memo).length > 64) memo = memo.slice(0, -1);
   } else {
-    if (!to.polygonAddress) throw new AppError("NO_USDT_ADDRESS", `@${to.username} hasn't set up a USDT wallet yet. Send NIM instead.`, 422);
     const from = input.fromAddress?.toLowerCase();
     if (!from || !isEvmAddress(from) || !(await verifiedEvmAddresses(userId)).includes(from)) {
-      throw new AppError("PAYER_NOT_VERIFIED", "Verify your USDT wallet before sending USDT.", 422);
+      throw new AppError("PAYER_NOT_VERIFIED", `Verify your Polygon wallet before sending ${input.currency}.`, 422);
     }
-    atomic = BigInt(Math.round(input.amount * 1e6));
-    if (atomic < 1n) throw new AppError("INVALID_AMOUNT", "Enter an amount.", 422);
-    toAddress = to.polygonAddress;
+    if (from === toAddress) throw new AppError("SELF_TRANSFER", "That's the wallet you're sending from.", 422);
     fromAddress = from;
   }
   if (input.circleId) {
     if (!input.round) throw new AppError("INVALID_ROUND", "Missing thrift round.", 422);
-    await checkContribution(db, userId, { circleId: input.circleId, round: input.round, toUserId: recipient.id, currency: input.currency, amountAtomic: atomic });
+    if (!recipientId || input.currency === "POL") throw new AppError("INVALID_CONTRIBUTION", "Thrift contributions go to a member's @username in NIM or USDT.", 422);
+    await checkContribution(db, userId, { circleId: input.circleId, round: input.round, toUserId: recipientId, currency: input.currency, amountAtomic: atomic });
   }
-  const amount = input.currency === "NIM" ? Number(atomic) / 1e5 : Number(atomic) / 1e6;
+  const amount = Number(atomic) / 10 ** DECIMALS[input.currency];
   const { rates } = await getRatesSafe();
-  const usd = rates ? amount * (input.currency === "NIM" ? rates.nimUsd : rates.usdtUsd) : null;
+  const price = rates ? (input.currency === "NIM" ? rates.nimUsd : input.currency === "USDT" ? rates.usdtUsd : rates.polUsd) : null;
+  const usd = price ? amount * price : null;
 
   const rows = await db.query<Row>(
     `insert into transfers (ref, from_user_id, to_user_id, currency, chain, network, amount, amount_atomic, from_address, to_address, note, memo, status, amount_usd, circle_id, circle_round)
      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'created',$13,$14,$15) returning *`,
     [
-      ref, userId, recipient.id, input.currency, input.currency === "NIM" ? "nimiq" : "polygon",
-      input.currency === "NIM" ? config.nimiq.network : "polygon", amount, atomic.toString(), fromAddress, toAddress, note, memo, usd,
+      ref, userId, recipientId, input.currency, evmChain ? "polygon" : "nimiq",
+      evmChain ? "polygon" : config.nimiq.network, amount, atomic.toString(), fromAddress, toAddress, note, memo, usd,
       input.circleId ?? null, input.circleId ? input.round : null,
     ],
   );
-  log.info("transfer.created", { ref, currency: input.currency });
+  log.info("transfer.created", { ref, currency: input.currency, to: input.toUsername ? "username" : "address" });
   return toDTO(db, rows[0], userId);
 }
 
@@ -249,7 +305,8 @@ export async function submitTransfer(userId: string, id: string, txHashRaw: stri
   const txHash = txHashRaw.trim().toLowerCase();
   const ok = t.chain === "nimiq" ? /^[0-9a-f]{64}$/.test(txHash) : /^0x[0-9a-f]{64}$/.test(txHash);
   if (!ok) throw new AppError("INVALID_TX_HASH", "That doesn't look like a valid transaction hash.", 422);
-  const [fromName, toName] = await Promise.all([usernameOf(db, t.from_user_id), usernameOf(db, t.to_user_id)]);
+  const [fromName, toSide] = await Promise.all([usernameOf(db, t.from_user_id), sideLabel(db, (t.to_user_id as string | null) ?? null, String(t.to_address))]);
+  const toName = toSide.label;
   try {
     await db.transaction(async (tx) => {
       const moved = await tx.query<Row>(
@@ -261,7 +318,7 @@ export async function submitTransfer(userId: string, id: string, txHashRaw: stri
         ref: String(t.ref),
         userId: t.from_user_id,
         category: "transfer_sent",
-        title: `Sent to @${toName}`,
+        title: toSide.type === "user" ? `Sent to @${toName}` : `Sent to ${toName}`,
         subtitle: (t.note as string) ?? null,
         amount: num(t.amount),
         currency: String(t.currency),
@@ -289,6 +346,9 @@ async function verify(t: Row) {
   if (t.chain === "nimiq") {
     return verifyNimiqTransfer({ txHash: String(t.tx_hash), expectedTo: String(t.to_address), minLuna: BigInt(String(t.amount_atomic)), expectedMemo: String(t.memo), notBefore });
   }
+  if (t.currency === "POL") {
+    return verifyPolygonNativeTransfer({ txHash: String(t.tx_hash), expectedTo: String(t.to_address), expectedFrom: String(t.from_address), exactWei: BigInt(String(t.amount_atomic)), notBefore });
+  }
   return verifyPolygonUsdtTransfer({ txHash: String(t.tx_hash), expectedTo: String(t.to_address), expectedFrom: String(t.from_address), exactUnits: BigInt(String(t.amount_atomic)), notBefore });
 }
 
@@ -307,6 +367,9 @@ async function advance(db: Db, t: Row): Promise<Row> {
       const c = rows[0];
       if (!c) return (await tx.query<Row>("select * from transfers where id = $1", [t.id]))[0];
       await updateLedgerBySource(tx, "transfers", c.id, "transfer_sent", { status: "successful" });
+      log.info("transfer.confirmed", { ref: c.ref, currency: c.currency });
+      // A plain address that isn't an AuraPay user has nobody to show "received" to.
+      if (!c.to_user_id) return c;
       const fromName = await usernameOf(tx, c.from_user_id);
       await insertLedger(tx, {
         ref: `${c.ref}-IN`,
@@ -326,7 +389,6 @@ async function advance(db: Db, t: Row): Promise<Row> {
         sourceId: c.id,
         details: { from: fromName, note: c.note ?? null },
       });
-      log.info("transfer.confirmed", { ref: c.ref, currency: c.currency });
       return c;
     });
   }

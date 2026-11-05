@@ -15,6 +15,7 @@ export const GET = handler(async (req) => {
   return json({
     nimUsd: rates.nimUsd,
     usdtUsd: rates.usdtUsd,
+    polUsd: rates.polUsd,
     source: rates.source,
     fetchedAt: new Date(rates.fetchedAt).toISOString(),
     fiat: fiatCode ? { currency: fiatCode, perUsd: fx?.perUsd ?? null, source: fx?.source ?? null } : null,

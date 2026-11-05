@@ -15,25 +15,28 @@ import { log, errorMessage } from "./log";
 export interface Rates {
   nimUsd: number;
   usdtUsd: number;
+  /** POL (Polygon's native coin); null if CoinGecko didn't return it. Optional: nothing is priced in POL. */
+  polUsd: number | null;
   source: string;
   fetchedAt: number;
 }
 
-const COINGECKO_IDS = { NIM: "nimiq-2", USDT: "tether" } as const;
+const COINGECKO_IDS = { NIM: "nimiq-2", USDT: "tether", POL: "polygon-ecosystem-token" } as const;
 const TTL_MS = 60_000;
 
 const g = globalThis as unknown as { __apRates?: { value?: Rates; error?: string; at: number } };
 
 async function fetchRates(): Promise<Rates> {
   const body = await coingecko<Record<string, { usd?: number }>>(
-    `/simple/price?ids=${COINGECKO_IDS.NIM},${COINGECKO_IDS.USDT}&vs_currencies=usd`,
+    `/simple/price?ids=${COINGECKO_IDS.NIM},${COINGECKO_IDS.USDT},${COINGECKO_IDS.POL}&vs_currencies=usd`,
     TTL_MS,
   );
   const nimUsd = body[COINGECKO_IDS.NIM]?.usd;
   const usdtUsd = body[COINGECKO_IDS.USDT]?.usd;
   if (!nimUsd || nimUsd <= 0) throw new Error("CoinGecko returned no NIM price");
   if (!usdtUsd || usdtUsd <= 0) throw new Error("CoinGecko returned no USDT price");
-  return { nimUsd, usdtUsd, source: "coingecko", fetchedAt: Date.now() };
+  const pol = body[COINGECKO_IDS.POL]?.usd;
+  return { nimUsd, usdtUsd, polUsd: pol && pol > 0 ? pol : null, source: "coingecko", fetchedAt: Date.now() };
 }
 
 export async function getRates(): Promise<Rates> {

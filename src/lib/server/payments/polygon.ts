@@ -116,6 +116,50 @@ export async function verifyPolygonUsdtTransfer(opts: {
   };
 }
 
+/**
+ * Verifies a native POL transfer: the transaction itself (not a token log) must be from `expectedFrom`
+ * to `expectedTo` for exactly `exactWei`, succeed, and have enough confirmations.
+ */
+export async function verifyPolygonNativeTransfer(opts: { txHash: string; expectedTo: string; expectedFrom: string; exactWei: bigint; notBefore: Date }): Promise<VerifyResult> {
+  const hash = opts.txHash.trim().toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(hash)) return { state: "rejected", reason: "Invalid Polygon transaction hash." };
+  let tx: { from?: string; to?: string | null; value?: string; blockNumber?: string | null } | null;
+  let receipt: Receipt | null;
+  let head: string | null;
+  try {
+    [tx, receipt, head] = await Promise.all([
+      rpc<{ from?: string; to?: string | null; value?: string; blockNumber?: string | null }>("eth_getTransactionByHash", [hash]),
+      rpc<Receipt>("eth_getTransactionReceipt", [hash]),
+      rpc<string>("eth_blockNumber", []),
+    ]);
+  } catch (err) {
+    log.warn("polygon.rpc_error", { error: (err as Error).message });
+    return { state: "pending", reason: "Could not reach Polygon to verify yet." };
+  }
+  if (!tx || !receipt) return { state: "pending", reason: "Transaction not mined yet." };
+  if (receipt.status !== "0x1") return { state: "rejected", reason: "Transaction reverted on-chain." };
+  const from = opts.expectedFrom.toLowerCase();
+  const to = opts.expectedTo.toLowerCase();
+  if ((tx.from ?? "").toLowerCase() !== from) return { state: "rejected", reason: "The POL was sent from a different wallet." };
+  if ((tx.to ?? "").toLowerCase() !== to) return { state: "rejected", reason: "The POL went to a different address." };
+  const value = BigInt(tx.value ?? "0x0");
+  if (value !== opts.exactWei) return { state: "rejected", reason: "POL amount doesn't match this transfer." };
+  const blockNumber = Number(BigInt(receipt.blockNumber));
+  const confirmations = head ? Number(BigInt(head)) - blockNumber + 1 : 0;
+  let timestamp = 0;
+  try {
+    const block = await rpc<{ timestamp: string }>("eth_getBlockByNumber", [receipt.blockNumber, false]);
+    timestamp = block ? Number(BigInt(block.timestamp)) * 1000 : 0;
+  } catch {
+    return { state: "pending", reason: "Could not load block details yet." };
+  }
+  if (timestamp && timestamp < opts.notBefore.getTime()) return { state: "rejected", reason: "Transaction predates this transfer." };
+  if (confirmations < config.polygon.minConfirmations) {
+    return { state: "pending", reason: `Waiting for confirmations (${confirmations}/${config.polygon.minConfirmations}).` };
+  }
+  return { state: "confirmed", from, to, atomicValue: value.toString(), confirmations, blockNumber, timestamp, raw: { receiptBlock: receipt.blockNumber } };
+}
+
 /** Reads a USDT (Polygon) balance server-side so the wallet need not switch chains just to display it. */
 /** Native POL balance (pays Polygon gas). */
 export async function polBalanceOf(address: string): Promise<number> {

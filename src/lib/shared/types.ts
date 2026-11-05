@@ -33,7 +33,7 @@ export interface IntegrationStatus {
   nimiq: { network: "mainnet" | "testnet"; merchantConfigured: boolean; rpcConfigured: boolean };
   polygon: { merchantConfigured: boolean; rpcUrlHost: string };
   rails: Record<PayCurrency, RailStatus>;
-  rates: { state: "live" | "unavailable"; source: string; nimUsd?: number; usdtUsd?: number; reason?: string };
+  rates: { state: "live" | "unavailable"; source: string; nimUsd?: number; usdtUsd?: number; polUsd?: number | null; reason?: string };
   merchant: { nimAddress?: string; polygonAddress?: string };
 }
 
@@ -255,15 +255,20 @@ export interface UsernameProfile {
 
 export type TransferStatus = "created" | "pending" | "confirmed" | "failed" | "expired";
 
+/** What can be sent wallet to wallet: NIM (Nimiq), USDT and POL (Polygon). */
+export type TransferCurrency = PayCurrency | "POL";
+
 export interface TransferDTO {
   id: string;
   ref: string;
   direction: "sent" | "received";
-  currency: PayCurrency;
+  currency: TransferCurrency;
   amount: number;
   amountAtomic: string;
   amountUsd: number | null;
-  counterparty: string; // @username of the other side
+  /** @username of the other side, or a shortened address for transfers to a plain address. */
+  counterparty: string;
+  counterpartyType: "user" | "address";
   toAddress: string;
   fromAddress: string | null;
   note: string | null;

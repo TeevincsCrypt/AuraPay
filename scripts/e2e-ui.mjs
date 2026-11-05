@@ -299,7 +299,7 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
   }
   for (const [name, path, text] of [
     ["home", "/", "Total balance"],
-    ["send", "/send", "NIM or USDT to any AuraPay @username"],
+    ["send", "/send", "NIM, USDT or POL to an @username or any address"],
     ["receive", "/receive", `@${MY_NAME}`],
     ["pay", "/pay", "Where are you sending to?"],
     ["schedules", "/schedules", "Reminders for recurring payments"],
@@ -610,6 +610,36 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       });
       await page.getByText(`Sent to @${FRIEND_NAME}`).waitFor({ timeout: 20_000 });
       await page.screenshot({ path: `${OUT}/send-3-done.png`, fullPage: true });
+    });
+    await step("send POL to a pasted 0x address: native value, verified on Polygon", async () => {
+      const dest = "0x7777777777777777777777777777777777777777";
+      await page.goto(APP + "/send", { waitUntil: "networkidle" });
+      await page.getByLabel("To").fill(dest);
+      await page.getByText("✓ Polygon address · sends USDT or POL").waitFor();
+      if (!(await page.getByRole("radio", { name: "NIM" }).isDisabled())) throw new Error("NIM must be disabled for a 0x address");
+      await page.getByRole("radio", { name: "POL" }).click();
+      await page.getByLabel("Amount in POL").fill("0.3");
+      await page.getByText(/keeps 0\.01 POL for fees/).waitFor();
+      await page.getByRole("button", { name: "Review" }).click();
+      await page.getByText("You're sending to").waitFor();
+      await page.getByText("0x7777…7777").first().waitFor();
+      await page.screenshot({ path: `${OUT}/send-pol-review.png`, fullPage: true });
+      const before = sentTxs.length;
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(300);
+      const knob = page.getByRole("button", { name: /Slide to send/ });
+      const box = await knob.boundingBox();
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 330, box.y + box.height / 2, { steps: 12 });
+      await page.mouse.up();
+      for (let i = 0; i < 20 && sentTxs.length <= before; i++) await page.waitForTimeout(250);
+      const tx = sentTxs.slice(before).find((t) => t.kind === "evm");
+      if (!tx) throw new Error("wallet was not asked to send");
+      if (String(tx.to).toLowerCase() !== dest || BigInt(tx.value) !== 3n * 10n ** 17n) throw new Error(`unexpected tx ${JSON.stringify(tx)}`);
+      await post("/_test/polygon-tx", { hash: tx.hash, timestamp: Date.now(), receipt: { status: "0x1", blockNumber: `0x${(60_000_000 - 20).toString(16)}`, from: evmAccount.address.toLowerCase(), to: dest, logs: [] }, tx: { input: "0x", value: tx.value } });
+      await page.getByText("Sent to 0x7777…7777").waitFor({ timeout: 20_000 });
+      await page.screenshot({ path: `${OUT}/send-pol-done.png`, fullPage: true });
     });
   }
   await ctx.close();

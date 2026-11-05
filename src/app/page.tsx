@@ -35,7 +35,7 @@ export default function HomePage() {
 function Dashboard({ evm, username }: { evm: string | null; username: string | null }) {
   const w = useWallet();
   const { data: status } = useStatus();
-  const usdtQ = useApi<{ balance: number }>(evm ? `/api/wallet/usdt-balance?address=${evm}` : null);
+  const usdtQ = useApi<{ balance: number; pol?: number | null }>(evm ? `/api/wallet/usdt-balance?address=${evm}` : null);
   const activityQ = useApi<{ items: ActivityItem[] }>("/api/activity?limit=5");
   const beneficiariesQ = useApi<{ beneficiaries: Beneficiary[] }>("/api/beneficiaries");
   const recurringQ = useApi<{ items: RecurringItem[] }>("/api/recurring");
@@ -50,9 +50,12 @@ function Dashboard({ evm, username }: { evm: string | null; username: string | n
     // Testnet NIM has no value: show the amount, but keep it out of the USD total.
     const nim = w.nimiq.balanceLuna !== null && nimUsd && !nimTestnet ? (w.nimiq.balanceLuna / 1e5) * nimUsd : null;
     const usdt = usdtQ.data?.balance ?? w.evm.usdtBalance ?? null;
-    return { nim, usdt };
-  }, [status, nimTestnet, w.nimiq.balanceLuna, w.evm.usdtBalance, usdtQ.data]);
-  const known = [parts.nim, parts.usdt].filter((v): v is number => v !== null);
+    const polAmount = usdtQ.data?.pol ?? w.evm.polBalance ?? null;
+    const polUsd = status?.rates.polUsd;
+    const pol = polAmount !== null && polUsd ? polAmount * polUsd : null;
+    return { nim, usdt, polAmount, pol };
+  }, [status, nimTestnet, w.nimiq.balanceLuna, w.evm.usdtBalance, w.evm.polBalance, usdtQ.data]);
+  const known = [parts.nim, parts.usdt, parts.pol].filter((v): v is number => v !== null);
   const total = known.length ? known.reduce((s, v) => s + v, 0) : null;
   const loading = !status;
   const money = useMoney();
@@ -90,6 +93,9 @@ function Dashboard({ evm, username }: { evm: string | null; username: string | n
             </span>
           )}
           <span className="rounded-full bg-white/70 px-2.5 py-1">USDT {parts.usdt !== null ? `${fmtNum(parts.usdt, 2)}${money.currency !== "USD" ? ` · ${val(parts.usdt)}` : ""}` : evm ? "—" : "· not linked"}</span>
+          {parts.polAmount !== null && parts.polAmount > 0 ? (
+            <span className="rounded-full bg-white/70 px-2.5 py-1">POL {fmtNum(parts.polAmount, 4)}{parts.pol !== null ? ` · ${val(parts.pol)}` : ""}</span>
+          ) : null}
         </div>
         <div className="mx-auto mt-7 grid max-w-[360px] grid-cols-4 gap-2">
           <CircleAction href="/send" icon={<Send className="size-5" />} label="Send" />

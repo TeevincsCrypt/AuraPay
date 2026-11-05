@@ -9,7 +9,7 @@ import { Button, Card, Field, Input, Notice, PageHeader, Segmented, Spinner } fr
 import { useStatus } from "@/lib/client/hooks";
 import { useSession } from "@/lib/client/session";
 import { useWallet, WalletActionError } from "@/lib/client/wallet";
-import type { PayCurrency } from "@/lib/shared/types";
+import type { TransferCurrency } from "@/lib/shared/types";
 
 function CopyRow({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);
@@ -41,7 +41,7 @@ export default function ReceivePage() {
   const w = useWallet();
   const { data: status } = useStatus();
   const user = session.user;
-  const [currency, setCurrency] = useState<PayCurrency>("NIM");
+  const [currency, setCurrency] = useState<TransferCurrency>("NIM");
   const [amount, setAmount] = useState("");
   const [qr, setQr] = useState<string | null>(null);
   const [linking, setLinking] = useState(false);
@@ -71,7 +71,7 @@ export default function ReceivePage() {
     <div className="mx-auto max-w-[560px] space-y-5">
       <PageHeader
         title="Receive"
-        subtitle="Share your @username or QR code to get NIM or USDT."
+        subtitle="Share your @username, QR code or address to get NIM, USDT or POL."
         action={
           <Link href="/send" className="inline-flex h-8 items-center gap-1 rounded-full bg-surface px-3 text-[12.5px] font-medium text-fg-2 shadow-[var(--shadow-card)]">
             <Send className="size-3.5" /> Send
@@ -87,7 +87,7 @@ export default function ReceivePage() {
             </span>
             <div>
               <p className="text-[15px] font-semibold text-fg">Choose your @username</p>
-              <p className="mt-0.5 text-[13px] text-fg-2">People can then send you NIM and USDT by name.</p>
+              <p className="mt-0.5 text-[13px] text-fg-2">People can then send you NIM, USDT and POL by name.</p>
             </div>
           </div>
           <div className="mt-4">
@@ -106,13 +106,14 @@ export default function ReceivePage() {
               </div>
             </div>
             <div className="mt-5 space-y-3">
-              <Segmented<PayCurrency>
+              <Segmented<TransferCurrency>
                 className="w-full"
                 value={currency}
                 onChange={setCurrency}
                 options={[
                   { value: "NIM", label: "NIM" },
-                  { value: "USDT", label: "USDT · Polygon", disabled: !user.receiveEvmAddress },
+                  { value: "USDT", label: "USDT", disabled: !user.receiveEvmAddress },
+                  { value: "POL", label: "POL", disabled: !user.receiveEvmAddress },
                 ]}
               />
               <Field label="Request an amount (optional)" htmlFor="req">
@@ -140,12 +141,12 @@ export default function ReceivePage() {
             <p className="text-xs text-fg-3">Anyone can also send directly to these, even without AuraPay.</p>
             <div className="divide-y divide-line">
               <CopyRow label={`NIM · Nimiq ${status?.nimiq.network ?? ""}`} value={user.address} />
-              {user.receiveEvmAddress ? <CopyRow label="USDT · Polygon" value={user.receiveEvmAddress} /> : null}
+              {user.receiveEvmAddress ? <CopyRow label="USDT & POL · Polygon" value={user.receiveEvmAddress} /> : null}
             </div>
             {!user.receiveEvmAddress ? (
               <div className="pb-3">
                 <Notice tone="info" className="mt-1">
-                  To receive USDT by username, verify your Nimiq Pay USDT wallet once (a signature, no transaction).
+                  To receive USDT and POL by username, verify your Nimiq Pay Polygon wallet once (a signature, no transaction).
                 </Notice>
                 <Button
                   className="mt-3 w-full"
@@ -165,9 +166,9 @@ export default function ReceivePage() {
                     }
                   }}
                 >
-                  <Wallet className="size-4" /> Verify USDT wallet
+                  <Wallet className="size-4" /> Verify Polygon wallet
                 </Button>
-                {!w.evm.available ? <p className="mt-2 text-xs text-fg-3">Open AuraPay in Nimiq Pay to verify your USDT wallet.</p> : null}
+                {!w.evm.available ? <p className="mt-2 text-xs text-fg-3">Open AuraPay in Nimiq Pay to verify your Polygon wallet.</p> : null}
                 {err ? <Notice tone="error" className="mt-2">{err}</Notice> : null}
               </div>
             ) : null}

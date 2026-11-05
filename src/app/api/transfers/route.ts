@@ -6,8 +6,10 @@ import { createTransfer, listTransfers, recentRecipients } from "@/lib/server/tr
 export const dynamic = "force-dynamic";
 
 const Create = z.object({
-  toUsername: z.string().trim().min(1).max(32),
-  currency: z.enum(["NIM", "USDT"]),
+  toUsername: z.string().trim().min(1).max(32).optional(),
+  /** A Nimiq (NQ…) or Polygon (0x…) address, instead of a username. */
+  toAddress: z.string().trim().min(3).max(64).optional(),
+  currency: z.enum(["NIM", "USDT", "POL"]),
   amount: z.number().positive().max(100_000_000),
   note: z.string().trim().max(40).optional(),
   fromAddress: z.string().trim().max(64).optional(),
