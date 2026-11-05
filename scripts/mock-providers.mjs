@@ -358,6 +358,11 @@ const server = http.createServer(async (req, res) => {
     evmTxs.set(body.hash.toLowerCase(), body);
     return send(res, 200, { ok: true });
   }
+  if (p === "/_test/proxy" && req.method === "POST") {
+    proxyFail = body.fail ?? null;
+    if (proxyFail) for (const t of proxyTunnels) t.destroy();
+    return send(res, 200, { ok: true, proxyFail });
+  }
   if (p === "/_test/vault" && req.method === "POST") {
     // { locks: [{ id, owner, token, amount (units), unlockAt (unix s), released }] }
     for (const l of body.locks ?? []) vaultLocks.set(String(l.id), { ...vaultLocks.get(String(l.id)), ...l, owner: l.owner?.toLowerCase() ?? vaultLocks.get(String(l.id))?.owner, token: (l.token ?? P.USDT).toLowerCase() });
@@ -676,7 +681,9 @@ server.listen(PORT, () => console.log(`mock providers on http://localhost:${PORT
 // ---- Static-IP egress proxy stand-in (Fixie / QuotaGuard): a plain HTTP forward proxy that
 // requires Basic auth and counts what passes through it. Absolute-URI requests only (http targets).
 const PROXY_PORT = PORT + 1;
-const proxyStats = { hits: 0, unauthorized: 0 };
+const proxyStats = { hits: 0, unauthorized: 0, refused: 0 };
+let proxyFail = null; // e.g. 403: refuse every CONNECT (like a proxy plan that ran out)
+const proxyTunnels = new Set(); // open tunnels, dropped when the proxy is switched to failing
 http
   .createServer((req, res) => {
     if (req.url === "/_stats") return send(res, 200, proxyStats);
@@ -704,8 +711,15 @@ http
       socket.end("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic\r\n\r\n");
       return;
     }
+    if (proxyFail) {
+      proxyStats.refused++;
+      socket.end(`HTTP/1.1 ${proxyFail} Refused\r\n\r\n`);
+      return;
+    }
     proxyStats.hits++;
     const [host, port] = req.url.split(":");
+    proxyTunnels.add(socket);
+    socket.on("close", () => proxyTunnels.delete(socket));
     const up = net.connect(Number(port), host, () => {
       socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       if (head?.length) up.write(head);

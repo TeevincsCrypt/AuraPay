@@ -517,6 +517,25 @@ await test("Flutterwave calls go through the static-IP proxy when one is configu
   assert(stats.hits > 0, `Flutterwave traffic tunnelled through the proxy (${stats.hits})`);
   eq(stats.unauthorized, 0, "proxy credentials sent");
 });
+await test("if the proxy fails: catalogue from cache, payment held (nothing sent), retry delivers", async () => {
+  if (PROVIDER !== "flutterwave") return;
+  if (!(await (await fetch(APP + "/api/status")).json()).utilities.staticIpProxy) return;
+  await mock("/_test/proxy", { fail: 403 });
+  try {
+    eq((await c.get("/api/utilities/countries")).status, 200, "countries still listed");
+    eq((await c.get("/api/utilities/operators?country=NG&service=airtime")).status, 200, "operators from cache");
+    const o = await createOrder(c); // number check falls back to a direct read
+    const r = await payNim(c, o);
+    eq(r.status, "requires_review", "held");
+    assert(/couldn't be reached\. Nothing was delivered/.test(r.statusReason ?? ""), `plain reason, got ${r.statusReason}`);
+    assert(!/proxy|403/i.test(r.statusReason ?? ""), "no proxy jargon for customers");
+    await mock("/_test/proxy", { fail: null });
+    const retried = (await c.post(`/api/admin/orders/${o.id}/retry`, {}, { authorization: `Bearer ${ADMIN}` })).json.order;
+    eq(retried.status, "successful", "delivered after the proxy recovered");
+  } finally {
+    await mock("/_test/proxy", { fail: null });
+  }
+});
 await test("orders are private to their account", async () => {
   const other = new Client();
   await signIn(other);

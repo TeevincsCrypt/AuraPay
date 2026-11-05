@@ -6,6 +6,7 @@ import { countryByCode } from "@/lib/shared/countries";
 import { networkFromName, networkFromNumber } from "./networks";
 import { config, testOverride } from "../config";
 import { AppError } from "../http";
+import { getDb } from "../db";
 import { errorMessage, log } from "../log";
 import { normalisePhone, ProviderError, roundUpCents, type PriceInput, type Priced, type ProviderOrder, type ProviderOutcome, type UtilityProvider } from "./provider";
 
@@ -70,27 +71,56 @@ function flwFetch(): typeof fetch {
   return proxied.fetch;
 }
 
+/** "fetch failed" hides the reason; undici nests it in `cause` (e.g. proxy 403/407, ECONNREFUSED, timeout). */
+function networkDetail(err: unknown): string {
+  const chain: { message?: string; code?: string }[] = [];
+  for (let e = err as { message?: string; code?: string; cause?: unknown } | undefined, i = 0; e && i < 5; e = e.cause as typeof e, i++) chain.push(e);
+  const all = chain.map((e) => e.message ?? "").join(" | ");
+  const proxyStatus = all.match(/Proxy response \((\d+)\)/)?.[1];
+  if (proxyStatus) {
+    const hint = proxyStatus === "407" ? "proxy rejected the credentials" : proxyStatus === "403" || proxyStatus === "429" ? "proxy refused it (plan limit reached?)" : "proxy error";
+    return `static-IP proxy responded ${proxyStatus} (${hint})`;
+  }
+  const code = chain.map((e) => e.code).find(Boolean);
+  const inner = chain.slice(1).map((e) => e.message).filter(Boolean).at(-1);
+  return [chain[0]?.message, code ?? inner].filter(Boolean).join(": ") || errorMessage(err);
+}
+
 async function flw<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<FlwResponse<T>> {
   const key = config.flutterwave.secretKey;
   if (!key) throw new ProviderError("PROVIDER_DISCONNECTED", "The utility provider is not connected.", 503);
   const isRead = method === "GET";
   for (let attempt = 0; attempt < (isRead ? 3 : 1); attempt++) {
     let res: Response;
+    const init = {
+      method,
+      headers: { Authorization: `Bearer ${key}`, Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(isRead ? 15_000 : 45_000),
+      cache: "no-store" as const,
+    };
     try {
-      res = await flwFetch()(`${base()}${path}`, {
-        method,
-        headers: { Authorization: `Bearer ${key}`, Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}) },
-        body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(isRead ? 15_000 : 45_000),
-        cache: "no-store",
-      });
+      res = await flwFetch()(`${base()}${path}`, init);
     } catch (err) {
-      if (!isRead) throw new FlwError(0, "Network error talking to Flutterwave.", true);
-      if (attempt < 2) {
-        await sleep(400 * 2 ** attempt);
-        continue;
+      const detail = networkDetail(err);
+      log.warn("flutterwave.network_error", { method, path: path.split("?")[0], viaProxy: Boolean(config.flutterwave.proxyUrl), detail });
+      // A broken proxy shouldn't take browsing down: reads may try once without it (payments never do).
+      if (isRead && config.flutterwave.proxyUrl && attempt === 2) {
+        try {
+          res = await fetch(`${base()}${path}`, { ...init, signal: AbortSignal.timeout(15_000) });
+          log.warn("flutterwave.proxy_bypassed_for_read", { path: path.split("?")[0], status: res.status });
+        } catch {
+          throw new FlwError(0, `Network error talking to Flutterwave: ${detail}`);
+        }
+      } else {
+        // A proxy refusal happens before anything reaches Flutterwave: the outcome is known (not sent).
+        if (!isRead) throw new FlwError(0, `Network error talking to Flutterwave: ${detail}`, !detail.startsWith("static-IP proxy responded"));
+        if (attempt < 2) {
+          await sleep(400 * 2 ** attempt);
+          continue;
+        }
+        throw new FlwError(0, `Network error talking to Flutterwave: ${detail}`);
       }
-      throw new FlwError(0, `Network error talking to Flutterwave: ${errorMessage(err)}`);
     }
     if (isRead && (res.status === 429 || res.status >= 500) && attempt < 2) {
       await sleep(600 * 2 ** attempt);
@@ -134,6 +164,16 @@ function toProviderError(err: unknown): never {
   if (err instanceof FlwError) {
     if (err.status === 401) throw new ProviderError("PROVIDER_AUTH_FAILED", "Couldn't authenticate with Flutterwave. Check FLUTTERWAVE_SECRET_KEY.", 502);
     const m = err.message.toLowerCase();
+    if (err.status === 0) {
+      // Couldn't reach Flutterwave (proxy or network). Detail goes to the logs, not to customers.
+      log.error("flutterwave.unreachable", { detail: err.message, outcomeUnknown: err.outcomeUnknown });
+      throw new ProviderError(
+        "PROVIDER_UNREACHABLE",
+        err.outcomeUnknown ? "We lost contact with our bills provider mid-request; we're checking whether it went through." : "Our bills provider couldn't be reached. Nothing was delivered.",
+        503,
+        err.outcomeUnknown,
+      );
+    }
     if (/whitelist|ip address/.test(m)) {
       log.error("flutterwave.ip_not_whitelisted", {
         hint: "Live Flutterwave Bills only accepts whitelisted IPs. Set FLUTTERWAVE_PROXY_URL (static-IP proxy) and whitelist its IPs in Flutterwave → Settings → API.",
@@ -152,20 +192,69 @@ function toProviderError(err: unknown): never {
 }
 
 // ---------------------------------------------------------------------------
-// Catalogue (cached 10 minutes per country/category)
+// Catalogue cache: in memory, then shared in the database (provider_cache) across serverless
+// instances. A failed refresh serves the last good copy (up to 7 days) instead of an error.
 // ---------------------------------------------------------------------------
 
 type Category = "airtime" | "data_bundle" | "power" | "cable" | "internet";
-const g = globalThis as unknown as { __flwCache?: Map<string, { at: number; value: unknown }> };
+const g = globalThis as unknown as { __flwCache?: Map<string, { at: number; value: unknown }>; __flwInflight?: Map<string, Promise<unknown>> };
 const cache = (g.__flwCache ??= new Map());
+const inflight = (g.__flwInflight ??= new Map());
+const MAX_STALE_MS = 7 * 24 * 3600_000;
 
-async function cached<T>(key: string, ttl: number, fn: () => Promise<T>): Promise<T> {
-  const k = `${config.flutterwave.mode}:${key}`;
-  const hit = cache.get(k);
-  if (hit && Date.now() - hit.at < ttl) return hit.value as T;
-  const value = await fn();
-  cache.set(k, { at: Date.now(), value });
-  return value;
+async function dbCacheGet(k: string): Promise<{ at: number; value: unknown } | null> {
+  try {
+    const db = await getDb();
+    const r = (await db.query<{ value_json: string; fetched_at: string | Date }>("select value_json, fetched_at from provider_cache where key = $1", [k]))[0];
+    return r ? { at: new Date(r.fetched_at).getTime(), value: JSON.parse(r.value_json) } : null;
+  } catch {
+    return null;
+  }
+}
+async function dbCacheSet(k: string, value: unknown): Promise<void> {
+  try {
+    const db = await getDb();
+    await db.query(
+      "insert into provider_cache (key, value_json, fetched_at) values ($1, $2, now()) on conflict (key) do update set value_json = excluded.value_json, fetched_at = now()",
+      [k, JSON.stringify(value)],
+    );
+  } catch (err) {
+    log.warn("flutterwave.cache_write_failed", { key: k, error: errorMessage(err) });
+  }
+}
+
+async function cached<T>(key: string, ttl: number, fn: () => Promise<T>, opts: { shared?: boolean } = {}): Promise<T> {
+  const k = `flw:${config.flutterwave.mode}:${key}`;
+  const mem = cache.get(k);
+  if (mem && Date.now() - mem.at < ttl) return mem.value as T;
+  const shared = opts.shared ?? true;
+  const db = shared ? await dbCacheGet(k) : null;
+  if (db && Date.now() - db.at < ttl) {
+    cache.set(k, db);
+    return db.value as T;
+  }
+  // One refresh at a time per instance.
+  const running = inflight.get(k) as Promise<T> | undefined;
+  if (running) return running;
+  const p = (async () => {
+    try {
+      const value = await fn();
+      cache.set(k, { at: Date.now(), value });
+      if (shared) await dbCacheSet(k, value);
+      return value;
+    } catch (err) {
+      const stale = [mem, db].filter((x): x is { at: number; value: unknown } => Boolean(x)).sort((a, b) => b.at - a.at)[0];
+      if (stale && Date.now() - stale.at < MAX_STALE_MS) {
+        log.warn("flutterwave.serving_stale_catalogue", { key, ageMin: Math.round((Date.now() - stale.at) / 60_000), error: errorMessage(err) });
+        return stale.value as T;
+      }
+      throw err;
+    } finally {
+      inflight.delete(k);
+    }
+  })();
+  inflight.set(k, p);
+  return p;
 }
 
 /** Category codes of Flutterwave's current Bills API (/bills/{code}/billers). */
@@ -222,7 +311,7 @@ async function currentItems(countryCode: string, category: Category): Promise<Fl
 
 async function items(countryCode: string, category: Category): Promise<FlwItem[]> {
   // Bundles and prices change rarely; caching also keeps calls through the static-IP proxy low.
-  return cached(`items:${countryCode}:${category}`, 30 * 60_000, async () => {
+  return cached(`items:${countryCode}:${category}`, 12 * 3600_000, async () => {
     try {
       const list = await currentItems(countryCode, category);
       if (list.length) return list;
