@@ -79,6 +79,13 @@ export default function ReceivePage() {
         }
       />
 
+      <Link href="/cash" className="flex items-center justify-between rounded-2xl bg-surface-2 px-4 py-3 text-[13px] text-fg-2">
+        <span>
+          <strong className="font-semibold text-fg">Add money with naira</strong> · Cash in &amp; out is coming soon
+        </span>
+        <span className="text-accent">See more →</span>
+      </Link>
+
       {!user.username ? (
         <Card className="p-5">
           <div className="flex items-start gap-3">

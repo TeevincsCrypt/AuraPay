@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
-import { ArrowDownLeft, AtSign, BellRing, CalendarClock, PiggyBank, Plus, Send, Tv, ListOrdered, ArrowRight, Zap } from "lucide-react";
+import { ArrowDownLeft, AtSign, BellRing, CalendarClock, Landmark, PiggyBank, Plus, Send, Tv, ListOrdered, ArrowRight, Zap } from "lucide-react";
 import { ActivityRow } from "@/components/activity-row";
 import { CurrencyPicker } from "@/components/currency-picker";
 import { amountLabel, fmtDue, type RecurringItem } from "@/components/recurring";
@@ -176,6 +176,12 @@ function Dashboard({ evm, username }: { evm: string | null; username: string | n
 
       {/* Promo cards */}
       <section className="scrollbar-none -mx-4 flex gap-3 overflow-x-auto px-4 sm:mx-0 sm:grid sm:grid-cols-2 sm:px-0">
+        <Link href="/cash" className="relative w-[78%] shrink-0 overflow-hidden rounded-[24px] bg-gradient-to-br from-[#f1ecff] to-[#e9f3ff] p-5 sm:w-auto">
+          <p className="text-[15px] font-semibold text-fg">Cash in & out <span className="ml-1 rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-medium text-fg-2">Soon</span></p>
+          <p className="mt-1 max-w-[70%] text-[13px] text-fg-2">Buy and sell NIM, USDT and POL with naira, to and from your bank.</p>
+          <span className="mt-3 inline-flex items-center gap-1 text-[13px] font-medium text-accent">See what&apos;s coming <ArrowRight className="size-3.5" /></span>
+          <Landmark className="absolute -right-2 -bottom-3 size-24 text-[#d4cdf3]" strokeWidth={1.4} />
+        </Link>
         <Link href="/schedules" className="relative w-[78%] shrink-0 overflow-hidden rounded-[24px] bg-gradient-to-br from-[#e8f6ef] to-[#eef7fb] p-5 sm:w-auto">
           <p className="text-[15px] font-semibold text-fg">Bills on autopilot</p>
           <p className="mt-1 max-w-[70%] text-[13px] text-fg-2">Schedule airtime, data, power or TV to pay itself every week or month.</p>

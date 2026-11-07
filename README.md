@@ -12,8 +12,9 @@ AuraPay is a Nimiq Pay Mini App for African users:
 4. **Recurring payments & bill reminders**: repeat any bill or transfer weekly/monthly; it shows as due on Home and pays in one tap (prefilled), with a calendar file for phone alerts. Bills can also run on prepaid **Autopay**.
 5. **Earn on idle USDT**: supply USDT to **Aave V3 on Polygon** from your own wallet (approve → `Pool.supply`) and withdraw any time (`Pool.withdraw`, including "max"). Shows your aPolUSDT balance and the live supply APY read from Aave. A withdrawal hands straight off to **Pay a bill** or your **Thrift**.
 6. **Swap on QuickSwap (Polygon)**: **USDT ↔ POL** (top up gas with USDT, or turn POL into USDT) and **NIM ↔ USDT**: live router quotes, 0.5% slippage guard, exact approvals. NIM ↔ USDT switches on automatically once NIM exists on Polygon (Nimiq's announced bridge) with a QuickSwap pool; until then the screen says so.
-7. **Profile picture**: add a photo in the Account sheet; it shows on your @username for people sending to you.
-8. **Your currency**: amounts are shown in NIM/USDT and in your chosen currency (USD, NGN, GHS, KES, UGX) at live rates.
+7. **Cash in & out (coming soon)**: buy and sell NIM, USDT and POL with naira. The page (`/cash`) is live but disabled while AuraPay's registration with the Corporate Affairs Commission (CAC) completes; it shows live reference rates only and never takes money or bank details.
+8. **Profile picture**: add a photo in the Account sheet; it shows on your @username for people sending to you.
+9. **Your currency**: amounts are shown in NIM/USDT and in your chosen currency (USD, NGN, GHS, KES, UGX) at live rates.
 
 AuraPay runs only on **Nimiq** and **Polygon**.
 

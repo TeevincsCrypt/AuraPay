@@ -305,6 +305,7 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
     ["schedules", "/schedules", "Reminders for recurring payments"],
     ["earn", "/earn", "Put idle USDT to work"],
     ["savings", "/savings", "Lock USDT until a date you choose"],
+    ["cash", "/cash", "Not available yet"],
     ["thrift", "/thrift", "Save together as a group"],
     ["activity", "/activity", "Every bill"],
     ["status", "/status", "Integrations"],
@@ -446,6 +447,20 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await page.getByRole("button", { name: /Change photo/ }).waitFor();
       await page.screenshot({ path: `${OUT}/avatar-set.png` });
       await page.keyboard.press("Escape");
+    });
+    await step("cash in & out: not available yet (CAC), reference rate only, no money moves", async () => {
+      await page.goto(APP + "/cash", { waitUntil: "networkidle" });
+      await page.getByText(/Corporate Affairs Commission \(CAC\)/).waitFor();
+      await page.getByRole("radio", { name: /NIM/ }).first().click();
+      await page.getByLabel("You pay (NGN)").fill("10000");
+      await page.getByText(/You'd get about/).waitFor();
+      await page.getByText(/[\d,.]+ NIM$/).first().waitFor({ timeout: 8000 });
+      const buy = page.getByRole("button", { name: /Buy NIM: coming soon/ });
+      if (!(await buy.isDisabled())) throw new Error("buying must be disabled");
+      await page.getByRole("radio", { name: "Sell (cash out)" }).click();
+      if (!(await page.getByRole("button", { name: /Sell NIM: coming soon/ }).isDisabled())) throw new Error("selling must be disabled");
+      await noOverflow(page);
+      await page.screenshot({ path: `${OUT}/cash.png`, fullPage: true });
     });
     await step("USDT bill with no POL: free, explained up front, slider locked", async () => {
       await post("/_test/defi", { pol: "0" });
