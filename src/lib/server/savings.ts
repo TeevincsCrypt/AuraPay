@@ -45,8 +45,45 @@ export function savingsInfo(): SavingsInfo {
   return { enabled: true, reason: null, vaultAddress: vault.toLowerCase(), autoRelease: Boolean(relayerAccount()) };
 }
 
-function vaultOrThrow(): Address {
+/**
+ * The configured vault, checked on Polygon: there must be contract code at the address and it must
+ * answer the vault's lockCount(). A wallet address, or a contract deployed on another network, would
+ * otherwise "accept" lock transactions that lock nothing. Cached: 10 min when fine, 1 min when not.
+ */
+const g = globalThis as unknown as { __vaultCheck?: { at: number; addr: string; ok: boolean; reason: string | null } };
+export async function savingsStatus(): Promise<SavingsInfo> {
   const info = savingsInfo();
+  if (!info.enabled || !info.vaultAddress) return info;
+  const c = g.__vaultCheck;
+  if (c && c.addr === info.vaultAddress && Date.now() - c.at < (c.ok ? 10 * 60_000 : 60_000)) {
+    return c.ok ? info : { ...info, enabled: false, reason: c.reason };
+  }
+  let ok = false;
+  let reason: string | null = null;
+  try {
+    const address = getAddress(info.vaultAddress);
+    const code = await client().getCode({ address });
+    if (!code || code === "0x") {
+      reason = `Savings isn't switched on yet: there's no contract at ${info.vaultAddress} on Polygon. Check SAVINGS_VAULT_ADDRESS is the deployed contract's address (not a wallet), deployed on Polygon.`;
+    } else {
+      await client().readContract({ address, abi: SAVINGS_VAULT_ABI, functionName: "lockCount" });
+      ok = true;
+    }
+  } catch (err) {
+    const msg = errorMessage(err);
+    // A contract that doesn't answer lockCount() isn't the Savings Vault; an RPC hiccup is retried soon.
+    reason = /revert|returned no data|function selector/i.test(msg)
+      ? `Savings isn't switched on yet: the contract at ${info.vaultAddress} isn't the AuraPay Savings Vault.`
+      : "Savings is temporarily unavailable: couldn't reach Polygon to check the vault.";
+    log.warn("savings.vault_check_failed", { error: msg });
+  }
+  g.__vaultCheck = { at: Date.now(), addr: info.vaultAddress, ok, reason };
+  if (!ok) log.error("savings.vault_invalid", { vault: info.vaultAddress, reason });
+  return ok ? info : { ...info, enabled: false, reason };
+}
+
+async function vaultOrThrow(): Promise<Address> {
+  const info = await savingsStatus();
   if (!info.enabled || !info.vaultAddress) throw new AppError("SAVINGS_UNAVAILABLE", info.reason ?? "Savings is unavailable.", 409);
   return getAddress(info.vaultAddress);
 }
@@ -166,7 +203,9 @@ async function advance(db: Db, r: Row): Promise<Row> {
     if (!fail && rc) {
       const ev = vaultEvents(rc, vault).find((e) => e.eventName === "Locked");
       const a = ev?.args as { id: bigint; owner: string; token: string; amount: bigint; unlockAt: bigint } | undefined;
-      if (!a || a.owner.toLowerCase() !== String(r.owner_address) || a.token.toLowerCase() !== USDT) fail = "This transaction didn't lock USDT from your wallet.";
+      if (!a) fail = "Nothing was locked: the Savings Vault recorded no lock in this transaction (your USDT stayed in your wallet).";
+      else if (a.owner.toLowerCase() !== String(r.owner_address)) fail = "This lock belongs to a different wallet.";
+      else if (a.token.toLowerCase() !== USDT) fail = "This transaction locked a token other than USDT.";
       else {
         const amount = Number(a.amount) / 1e6;
         const rows = await db.query<Row>(
@@ -205,7 +244,7 @@ async function advance(db: Db, r: Row): Promise<Row> {
 // ---------------------------------------------------------------------------
 
 export async function recordLock(userId: string, input: { txHash: string; from: string; label?: string | null }): Promise<SavingsLockDTO> {
-  const vault = vaultOrThrow().toLowerCase();
+  const vault = (await vaultOrThrow()).toLowerCase();
   const from = input.from.toLowerCase();
   if (!(await verifiedEvmAddresses(userId)).includes(from)) throw new AppError("PAYER_NOT_VERIFIED", "Verify this wallet first.", 422);
   const hash = input.txHash.trim().toLowerCase();
@@ -298,7 +337,7 @@ export async function recordRelease(userId: string, id: string, txHash: string):
  * gas. release() always pays the lock's owner, so the relayer can't redirect funds.
  */
 export async function autoReleaseDue(limit = 20): Promise<{ released: number; skipped?: string }> {
-  const info = savingsInfo();
+  const info = await savingsStatus();
   const account = relayerAccount();
   if (!info.enabled || !info.vaultAddress) return { released: 0, skipped: "savings disabled" };
   const db = await getDb();
@@ -335,7 +374,7 @@ export async function autoReleaseDue(limit = 20): Promise<{ released: number; sk
 
 /** USDT the wallet has approved to the Savings Vault (so the app only asks for approval when needed). */
 export async function vaultAllowance(address: string): Promise<number> {
-  const vault = vaultOrThrow();
+  const vault = await vaultOrThrow();
   const units = await client().readContract({ address: getAddress(USDT), abi: ERC20_ABI, functionName: "allowance", args: [getAddress(address), vault] });
   return Number(units) / 1e6;
 }

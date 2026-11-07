@@ -642,6 +642,11 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (body.method === "eth_getBalance") return ok(`0x${defi.pol.toString(16)}`);
+    // Contract code exists only at the contracts this mock implements; anything else is a plain wallet.
+    if (body.method === "eth_getCode") {
+      const addr = String(body.params?.[0]).toLowerCase();
+      return ok(Object.values(P).includes(addr) ? "0x6080604052" : "0x");
+    }
     // Enough of a node for a server-side signer (the Savings relayer) to send a transaction.
     if (body.method === "eth_getTransactionCount") return ok(`0x${relayerNonce.toString(16)}`);
     if (body.method === "eth_estimateGas") return ok("0x186a0");

@@ -992,6 +992,9 @@ await test("a lock is confirmed only from the vault's Locked event for your wall
   eq((await alice.post("/api/savings/locks", { txHash: (await chainLock({ unlockAt: t, to: ROUTER })).hash, from: PAYER_POLY })).json.lock.status, "failed", "not the vault");
   eq((await alice.post("/api/savings/locks", { txHash: (await chainLock({ owner: "0x3333333333333333333333333333333333333333", unlockAt: t })).hash, from: PAYER_POLY })).json.lock.status, "failed", "other owner");
   eq((await alice.post("/api/savings/locks", { txHash: await polyReceipt({ to: VAULT, logs: [], status: "0x0" }), from: PAYER_POLY })).json.lock.status, "failed", "reverted");
+  const empty = (await alice.post("/api/savings/locks", { txHash: await polyReceipt({ to: VAULT, logs: [] }), from: PAYER_POLY })).json.lock;
+  eq(empty.status, "failed", "succeeded but locked nothing");
+  assert(/Nothing was locked/.test(empty.failureReason ?? ""), `clear reason, got ${empty.failureReason}`);
   eq((await bob.post("/api/savings/locks", { txHash: hash, from: PAYER_POLY })).json.error?.code, "PAYER_NOT_VERIFIED", "not bob's wallet");
   eq((await alice.post("/api/savings/locks", { txHash: hash, from: PAYER_POLY })).json.lock.id, l.id, "same tx → same lock");
 });
