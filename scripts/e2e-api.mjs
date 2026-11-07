@@ -967,6 +967,9 @@ await test("savings is offered only once the vault contract is configured", asyn
   }
   eq(r.savings.vaultAddress, VAULT, "vault");
   eq(r.savings.autoRelease, true, "relayer configured");
+  const st = (await (await fetch(APP + "/api/status")).json()).savings;
+  eq(st.enabled, true, "/status shows Savings on");
+  eq(st.vaultAddress, VAULT, "/status shows the vault (also from a quoted Polygonscan link)");
 });
 let autoLock;
 await test("a lock is confirmed only from the vault's Locked event for your wallet's USDT", async () => {

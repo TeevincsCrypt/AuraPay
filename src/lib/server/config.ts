@@ -136,9 +136,10 @@ export const config = {
   nimPolygonToken: env("NIM_POLYGON_TOKEN"),
   savings: {
     /** Deployed AuraPaySavingsVault on Polygon (contracts/). Savings is off until this is set. */
-    vaultAddress: env("SAVINGS_VAULT_ADDRESS"),
+    /** As entered (quotes stripped); savings.ts extracts the 0x address, so a pasted Polygonscan link also works. */
+    vaultAddress: unquote(env("SAVINGS_VAULT_ADDRESS")),
     /** Optional gas-only key that calls release() for matured locks; it can never receive funds. */
-    relayerKey: env("SAVINGS_RELAYER_PRIVATE_KEY"),
+    relayerKey: unquote(env("SAVINGS_RELAYER_PRIVATE_KEY")),
   },
 
   pricing: {

@@ -35,6 +35,7 @@ export interface IntegrationStatus {
   rails: Record<PayCurrency, RailStatus>;
   rates: { state: "live" | "unavailable"; source: string; nimUsd?: number; usdtUsd?: number; polUsd?: number | null; reason?: string };
   merchant: { nimAddress?: string; polygonAddress?: string };
+  savings?: { enabled: boolean; vaultAddress: string | null; autoRelease: boolean; reason: string | null };
 }
 
 export interface ApiErrorBody {

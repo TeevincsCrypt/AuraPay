@@ -1,4 +1,5 @@
 import "server-only";
+import { savingsInfo } from "./savings";
 import type { IntegrationStatus } from "@/lib/shared/types";
 import { config } from "./config";
 import { getDbState } from "./db";
@@ -36,5 +37,10 @@ export async function integrationStatus(): Promise<IntegrationStatus> {
       ? { state: "live", source: rates.source, nimUsd: rates.nimUsd, usdtUsd: rates.usdtUsd, polUsd: rates.polUsd }
       : { state: "unavailable", source: "coingecko", reason: ratesError },
     merchant: { nimAddress: config.nimiq.merchantAddress, polygonAddress: config.polygon.merchantAddress },
+    // Whether this deployment sees the Savings Vault (and an auto-release relayer); never the key itself.
+    savings: (() => {
+      const s = savingsInfo();
+      return { enabled: s.enabled, vaultAddress: s.vaultAddress, autoRelease: s.autoRelease, reason: s.reason };
+    })(),
   };
 }

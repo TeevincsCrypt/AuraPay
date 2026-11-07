@@ -23,10 +23,24 @@ const USDT = TOKENS.USDT.address.toLowerCase();
 const isAddr = (a: string | undefined | null): a is string => Boolean(a && /^0x[0-9a-fA-F]{40}$/.test(a));
 const client = () => createPublicClient({ chain: polygon, transport: http(config.polygon.rpcUrl, { timeout: 12_000 }), batch: { multicall: false } });
 
+/** The vault address from SAVINGS_VAULT_ADDRESS: a bare 0x address, or one inside a pasted Polygonscan link. */
+function configuredVault(): { address: string | null; raw: string | undefined } {
+  const raw = config.savings.vaultAddress;
+  const m = raw?.match(/0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g);
+  return { address: m && m.length === 1 ? m[0] : null, raw };
+}
+
 export function savingsInfo(): SavingsInfo {
-  const vault = config.savings.vaultAddress;
+  const { address: vault, raw } = configuredVault();
   if (!isAddr(vault)) {
-    return { enabled: false, reason: "Savings isn't switched on yet: the Savings Vault contract hasn't been deployed for this app.", vaultAddress: null, autoRelease: false };
+    return {
+      enabled: false,
+      reason: raw
+        ? "Savings isn't switched on yet: SAVINGS_VAULT_ADDRESS is set but isn't a valid 0x… contract address."
+        : "Savings isn't switched on yet: the Savings Vault contract hasn't been deployed for this app.",
+      vaultAddress: null,
+      autoRelease: false,
+    };
   }
   return { enabled: true, reason: null, vaultAddress: vault.toLowerCase(), autoRelease: Boolean(relayerAccount()) };
 }
