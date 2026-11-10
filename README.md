@@ -104,3 +104,7 @@ curl -X POST -H "Authorization: Bearer $ADMIN_API_TOKEN" -H 'Content-Type: appli
 
 * Sending USDT needs a little POL for Polygon gas in the sender's wallet. Transfers are final: AuraPay can't reverse them.
 * Rate limiting is per server instance.
+
+## License
+
+[MIT](LICENSE) © 2026 TeevincsCrypt (AuraPay)

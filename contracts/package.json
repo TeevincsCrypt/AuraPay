@@ -1,6 +1,7 @@
 {
   "name": "aurapay-contracts",
   "private": true,
+  "license": "MIT",
   "version": "1.0.0",
   "description": "AuraPay Savings Vault: time-locked savings on Polygon",
   "scripts": {
