@@ -46,6 +46,8 @@ Safety rules enforced by the code: live top-ups can't be paid with testnet NIM, 
 
 ## 4. Operating it
 
+- **Dashboard:** open `/admin` and unlock it with your `ADMIN_API_TOKEN` to see users (total, with a @username, with a verified Polygon wallet, with a photo), active users over 24 h / 7 days / 30 days, new users per day, bills, transfers, swaps, Earn, Savings and Thrift, plus the newest users (addresses shortened). The token stays in that browser tab only; **Lock** forgets it.
+
 - **Scheduled bills are prepaid.** Customers pay every run up front; AuraPay pays the provider at each run time from your Flutterwave balance, at the local amount fixed when they scheduled. You carry the crypto/local-currency price movement in between. If a customer cancels, their unrun payments are owed back: list them with `GET /api/admin/schedules`, send the refund from the merchant wallet, then record it with `POST /api/admin/schedules/<id>/refund` (`{"refundTxHash":"<hash>"}`, verified on-chain).
 
 - **Earn and Swap** run entirely from the user's wallet on Polygon; users need a little **POL** for gas (the screens warn below 0.01 POL). AuraPay only records and verifies the transactions.

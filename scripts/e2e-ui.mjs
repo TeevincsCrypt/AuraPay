@@ -448,6 +448,17 @@ for (const [label, opts] of [["mobile", MOBILE], ["desktop", DESKTOP]]) {
       await page.screenshot({ path: `${OUT}/avatar-set.png` });
       await page.keyboard.press("Escape");
     });
+    await step("admin dashboard: unlock with the token, see users and activity", async () => {
+      const admin = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      await admin.goto(APP + "/admin", { waitUntil: "networkidle" });
+      await admin.getByLabel("Admin token").fill(process.env.ADMIN_API_TOKEN ?? "test-admin-token-123");
+      await admin.getByRole("button", { name: "Unlock" }).click();
+      await admin.getByText("Claimed a @username").waitFor({ timeout: 15_000 });
+      await admin.getByText("New users per day").waitFor();
+      await admin.getByText(`@${MY_NAME}`).first().waitFor();
+      await admin.screenshot({ path: `${OUT}/admin.png`, fullPage: true });
+      await admin.close();
+    });
     await step("cash in & out: not available yet (CAC), reference rate only, no money moves", async () => {
       await page.goto(APP + "/cash", { waitUntil: "networkidle" });
       await page.getByText(/Corporate Affairs Commission \(CAC\)/).waitFor();

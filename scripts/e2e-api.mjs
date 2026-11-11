@@ -1040,6 +1040,23 @@ await test("owner withdraws a matured lock themselves; on-chain releases by anyo
   eq(listed.status, "released", "seen from getLock()");
 });
 
+await test("admin dashboard stats: token required; counts users, usernames, wallets, activity", async () => {
+  eq((await fetch(APP + "/api/admin/stats")).status, 401, "no token");
+  eq((await fetch(APP + "/api/admin/stats", { headers: { authorization: "Bearer wrong" } })).status, 401, "wrong token");
+  const r = await fetch(APP + "/api/admin/stats", { headers: { authorization: `Bearer ${ADMIN}` } });
+  eq(r.status, 200, "ok");
+  const { stats } = await r.json();
+  assert(stats.users.total >= 3, `signed-in users counted (${stats.users.total})`);
+  assert(stats.users.withUsername >= 2 && stats.users.withUsername <= stats.users.total, "usernames counted");
+  assert(stats.users.withPolygonWallet >= 2, "verified Polygon wallets counted");
+  assert(stats.users.active24h >= 2 && stats.users.new7d >= 3, "activity windows");
+  assert(stats.signupsByDay.reduce((t, d) => t + d.count, 0) >= 3, "signups by day");
+  assert(stats.activity.transfers.some((t) => t.currency === "NIM" && t.count >= 1), "transfers by currency");
+  const me = stats.recentUsers.find((u) => u.username === aliceName);
+  assert(me && me.polygonVerified && me.bills >= 1, "alice listed with wallet + bills");
+  assert(!/NQ\d\d(\s?[0-9A-Z]{4}){8}/.test(JSON.stringify(stats.recentUsers)), "addresses shortened, never full");
+});
+
 await test("invest and borrow APIs are gone", async () => {
   for (const p of ["/api/portfolio", "/api/markets/quotes", "/api/borrow"]) eq((await c.get(p)).status, 404, p);
 });
